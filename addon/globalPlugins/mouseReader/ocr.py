@@ -315,6 +315,92 @@ def unstackLines(lines):
 	return out
 
 
+# Bullet dots. Windows OCR does not report them, so they are looked for in the picture itself,
+# a little to the left of each line: a small, round, solid blob of ink, alone in that space.
+# Distances are in the line's glyph height h. Tuned on a Slack capture (dev/captures).
+BULLET_SEARCH_LEFT = 2.6  # look from left - 2.6h ...
+BULLET_SEARCH_RIGHT = 0.4  # ... to left - 0.4h (clear of the first letter's ink)
+BULLET_BAND = 0.12  # the line's height extended by this much top and bottom (a dot sits higher than the letters' box)
+BULLET_CONTRAST = 45  # luminance difference from the background that counts as ink
+BULLET_MIN_SIDE = 0.12  # the blob's box sides, in h
+BULLET_MAX_SIDE = 0.6
+BULLET_MIN_FILL = 0.5  # ink pixels over box area (a filled dot is about 0.78)
+BULLET_ROUNDNESS = 0.55  # shorter side over longer side
+BULLET_CENTRE = 0.45  # the blob's centre within this much of h from the line's centre (OCR boxes include descenders)
+BULLET_MAX_LINE_HEIGHT = 120  # taller "lines" are icons and headings, not list text
+BULLET_MAX_LINES = 120  # a bound on the work per recognition
+
+
+def findBullets(pixels, width, height, data) -> int:
+	"""Put a bullet word in front of each OCR line that has a dot to its left in the picture.
+	pixels: the RGBQUAD array the window was rendered into; data: the recogniser's lines of
+	word dicts (picture coordinates), changed in place. Returns how many dots were found. Runs
+	on the recogniser's thread, before the result reaches the main thread."""
+	base = ctypes.addressof(pixels)
+	found = 0
+	for line in data[:BULLET_MAX_LINES]:
+		words = [w for w in line if w.get("text")]
+		if not words:
+			continue
+		words.sort(key=lambda w: w["x"])
+		if startsItem(words):
+			continue  # OCR saw the marker itself
+		top = min(w["y"] for w in words)
+		bottom = max(w["y"] + w["height"] for w in words)
+		left = words[0]["x"]
+		h = bottom - top
+		if h < 8 or h > BULLET_MAX_LINE_HEIGHT:
+			continue
+		x0 = max(0, int(left - BULLET_SEARCH_LEFT * h))
+		x1 = min(width, int(left - BULLET_SEARCH_RIGHT * h))
+		y0 = max(0, int(top - BULLET_BAND * h))
+		y1 = min(height, int(bottom + BULLET_BAND * h))
+		if x1 - x0 < 4 or y1 - y0 < 4:
+			continue
+		rowLen = (x1 - x0) * 4
+		lums = []
+		for y in range(y0, y1):
+			seg = ctypes.string_at(base + (y * width + x0) * 4, rowLen)
+			lums.append([(seg[i + 2] * 299 + seg[i + 1] * 587 + seg[i] * 114) // 1000 for i in range(0, rowLen, 4)])
+		flat = sorted(v for row in lums for v in row)
+		background = flat[len(flat) // 2]
+		count = 0
+		minX = minY = maxX = maxY = None
+		for j, row in enumerate(lums):
+			for k, v in enumerate(row):
+				if abs(v - background) > BULLET_CONTRAST:
+					count += 1
+					x, y = x0 + k, y0 + j
+					if minX is None:
+						minX = maxX = x
+						minY = maxY = y
+					else:
+						if x < minX:
+							minX = x
+						elif x > maxX:
+							maxX = x
+						if y < minY:
+							minY = y
+						elif y > maxY:
+							maxY = y
+		if not count:
+			continue
+		bw = maxX - minX + 1
+		bh = maxY - minY + 1
+		fill = count / float(bw * bh)
+		centre = (minY + maxY) / 2.0
+		if (
+			BULLET_MIN_SIDE * h <= bw <= BULLET_MAX_SIDE * h
+			and BULLET_MIN_SIDE * h <= bh <= BULLET_MAX_SIDE * h
+			and min(bw, bh) >= BULLET_ROUNDNESS * max(bw, bh)
+			and fill >= BULLET_MIN_FILL
+			and abs(centre - (top + bottom) / 2.0) <= BULLET_CENTRE * h
+		):
+			line.insert(0, {"text": "\u2022", "x": minX, "y": minY, "width": bw, "height": bh})
+			found += 1
+	return found
+
+
 def mergeRows(lines):
 	"""Join OCR lines that are fragments of one row (see ROW_OVERLAP_FRACTION): a paragraph
 	rule looking at a fragment ending in a full stop, or at a fragment's short right edge,
@@ -768,8 +854,15 @@ class OcrReader:
 		sent = time.time()
 
 		def onResult(result):
-			# Recogniser thread: hand over to the main thread.
+			# Recogniser thread: look for bullet dots in the picture, then hand over to the main thread.
 			log.info("mouseReader: OCR engine answered after %d ms" % int((time.time() - sent) * 1000))
+			if not isinstance(result, Exception):
+				try:
+					started = time.time()
+					bullets = findBullets(pixels, width, height, result.data)
+					log.info("mouseReader: %d bullet dots found in the picture (%d ms)" % (bullets, int((time.time() - started) * 1000)))
+				except Exception:
+					log.debugWarning("mouseReader: bullet search failed", exc_info=True)
 			queueHandler.queueFunction(queueHandler.eventQueue, self._onResult, recognizer, hwnd, rect, result, x, y, quiet, readAllAfter)
 
 		try:

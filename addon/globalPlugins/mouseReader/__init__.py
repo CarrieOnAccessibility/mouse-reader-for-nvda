@@ -53,7 +53,7 @@ SOURCE_CHOICES = (
 config.conf.spec[CONF_SECTION] = {
 	"enabled": "boolean(default=True)",
 	"hoverLevel": "option(%s, default='%s')" % (", ".join("'%s'" % key for key, _label in LEVEL_CHOICES), ocr.LEVEL_PARAGRAPH),
-	"beepOnOcr": "boolean(default=True)",
+	"beepOnOcr": "boolean(default=False)",
 	"source": "option(%s, default='%s')" % (", ".join("'%s'" % key for key, _label in SOURCE_CHOICES), ocr.SOURCE_AUTO),
 }
 
