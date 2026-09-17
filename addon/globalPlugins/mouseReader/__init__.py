@@ -75,7 +75,7 @@ class MouseReaderSettingsPanel(SettingsPanel):
 		section = config.conf[CONF_SECTION]
 		self.readFromClickCheckBox = sHelper.addItem(
 			# Translators: label of the check box that enables NVDA+control+click to read from that spot.
-			wx.CheckBox(self, label=_("&Read from here with NVDA+control+click"))
+			wx.CheckBox(self, label=_("&Read from here with NVDA+control+click, recognize with NVDA+control+shift+click"))
 		)
 		self.readFromClickCheckBox.SetValue(bool(section["readFromClick"]))
 		self.readFromStartChoice = sHelper.addLabeledControl(
@@ -143,6 +143,21 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 	)
 	def script_readFromMouse(self, gesture):
 		self.readFrom.readFromMouse()
+
+	@script(
+		# Translators: description of the command that OCRs the window under the mouse for hovering.
+		description=_("Recognizes the text in the window under the mouse, for reading paragraphs by hovering (same as NVDA+control+shift+click)"),
+		gesture="kb:NVDA+control+shift+r",
+	)
+	def script_recognizeWindow(self, gesture):
+		self.readFrom.recognizeAtMouse()
+
+	@script(
+		# Translators: description of the command that moves the review cursor to the mouse position.
+		description=_("Moves the review cursor to the text under the mouse without reading"),
+	)
+	def script_moveReviewToMouse(self, gesture):
+		self.readFrom.moveReviewToMouse()
 
 	@script(
 		# Translators: description of the command that skips back a paragraph while Read from here is reading.

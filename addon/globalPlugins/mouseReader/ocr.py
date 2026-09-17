@@ -272,18 +272,22 @@ class Snapshot:
 	# ---- hover ---------------------------------------------------------------------------
 
 	def hover(self, x: int, y: int) -> bool:
-		"""Read the paragraph under the point if it is a different one from last time.
+		"""Read the paragraph under the point when it is a different one from the last paragraph
+		visited. Blank space and the paragraph already being read leave things alone, so panning
+		Magnifier to follow a long message does not cut it off; entering another paragraph stops
+		whatever is being read (speech.cancelSpeech ends Say All too) and reads that one.
 		Returns True when something was read."""
 		index = self.paragraphAt(x, y)
-		if index is None:
-			self._lastHovered = None
+		if index is None or index == self._lastHovered:
 			return False
-		if index == self._lastHovered:
-			return True
 		self._lastHovered = index
 		speech.cancelSpeech()
 		speech.speakText(self.paragraphs[index].text)
 		return True
+
+	def markCurrent(self, index):
+		"""The paragraph reading starts from counts as visited, so moving inside it is quiet."""
+		self._lastHovered = index
 
 
 def buildSnapshot(hwnd, rect, data, imgInfo):
@@ -311,8 +315,10 @@ class OcrReader:
 		self.snapshot = None
 		self._pending = None  # recognizer of an OCR still in flight
 
-	def start(self, x: int, y: int, startUnit) -> bool:
-		"""Begin OCR of the window under the point. Returns False if there is nothing to OCR."""
+	def start(self, x: int, y: int, startUnit, readAfter: bool = True) -> bool:
+		"""Begin OCR of the window under the point. Returns False if there is nothing to OCR.
+		readAfter: start reading from the paragraph nearest the point once recognised;
+		otherwise just announce the result and leave the snapshot for hovering."""
 		try:
 			from contentRecog import uwpOcr
 		except Exception:
@@ -351,7 +357,7 @@ class OcrReader:
 
 		def onResult(result):
 			# Recogniser thread: hand over to the main thread.
-			queueHandler.queueFunction(queueHandler.eventQueue, self._onResult, recognizer, hwnd, rect, result, imgInfo, x, y, startUnit)
+			queueHandler.queueFunction(queueHandler.eventQueue, self._onResult, recognizer, hwnd, rect, result, imgInfo, x, y, startUnit, readAfter)
 
 		try:
 			recognizer.recognize(pixels, imgInfo, onResult)
@@ -361,7 +367,7 @@ class OcrReader:
 			ui.message(_("OCR is not available"))
 		return True
 
-	def _onResult(self, recognizer, hwnd, rect, result, imgInfo, x, y, startUnit):
+	def _onResult(self, recognizer, hwnd, rect, result, imgInfo, x, y, startUnit, readAfter):
 		if self._pending is not recognizer:
 			return  # superseded by a later click
 		self._pending = None
@@ -380,23 +386,49 @@ class OcrReader:
 			ui.message(_("No text recognized"))
 			return
 		self.snapshot = snapshot
+		log.info("mouseReader: OCR found %d paragraphs" % len(snapshot.paragraphs))
+		if not readAfter:
+			# Translators: reported after a window has been recognised; {count} paragraphs were found.
+			ui.message(_("Recognized {count} paragraphs; hover to read them").format(count=len(snapshot.paragraphs)))
+			return
+		if not self.readFromSnapshot(x, y, startUnit):
+			ui.message(_("No text recognized"))
+
+	def textInfoAt(self, x: int, y: int, startUnit):
+		"""A TextInfo on the snapshot's result at the paragraph (or word) under the point."""
+		snapshot = self.snapshot
+		if snapshot is None:
+			return None
 		index = snapshot.nearestParagraph(x, y)
 		if index is None:
-			ui.message(_("No text recognized"))
-			return
+			return None
 		if startUnit in (textInfos.UNIT_WORD, None):
 			offset = snapshot.wordOffsetAt(x, y, index)
 		else:
 			offset = snapshot.paragraphs[index].offset
-		log.info("mouseReader: OCR found %d paragraphs; reading from paragraph %d" % (len(snapshot.paragraphs), index + 1))
 		try:
-			info = snapshot.doc.makeTextInfo(textInfos.offsets.Offsets(offset, offset))
+			return snapshot.doc.makeTextInfo(textInfos.offsets.Offsets(offset, offset))
+		except Exception:
+			log.debugWarning("mouseReader: could not place a cursor in the OCR result", exc_info=True)
+			return None
+
+	def readFromSnapshot(self, x: int, y: int, startUnit) -> bool:
+		"""Say All over the snapshot from the paragraph nearest the point."""
+		info = self.textInfoAt(x, y, startUnit)
+		if info is None:
+			return False
+		index = self.snapshot.nearestParagraph(x, y)
+		log.info("mouseReader: reading the OCR result from paragraph %d" % (index + 1))
+		self.snapshot.markCurrent(index)
+		try:
 			if not api.setReviewPosition(info, clearNavigatorObject=True):
-				return
+				return False
 			self._owner.sessionStarted(sayAll.CURSOR.REVIEW)
 			sayAll.SayAllHandler.readText(sayAll.CURSOR.REVIEW, startedFromScript=True)
+			return True
 		except Exception:
 			log.exception("mouseReader: could not start reading the OCR result")
+			return False
 
 	# ---- hover ---------------------------------------------------------------------------
 
@@ -410,11 +442,6 @@ class OcrReader:
 			return False
 		if not snapshot.contains(x, y):
 			return False
-		try:
-			if sayAll.SayAllHandler and sayAll.SayAllHandler.isRunning():
-				return False  # never interrupt a reading in progress (Magnifier panning moves the mouse)
-		except Exception:
-			pass
 		return snapshot.hover(x, y)
 
 	def forget(self):
