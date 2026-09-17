@@ -15,6 +15,7 @@
 import addonHandler
 import config
 import globalPluginHandler
+import gui
 import inputCore
 from gui import guiHelper
 from gui.settingsDialogs import NVDASettingsDialog, SettingsPanel
@@ -59,22 +60,20 @@ class Settings:
 		return level if level in ocr.LEVELS else ocr.LEVEL_PARAGRAPH
 
 
-# Translators: the text of the read-only "How to use" box in the settings panel.
+# Translators: the text of the "How to use" dialog.
 HOW_TO_USE = _(
-	"For apps where NVDA's mouse tracking is silent (Slack, VS Code, pictures of text).\n"
-	"\n"
-	"NVDA+control+click, or NVDA+control+enter with the pointer over the window: recognize "
-	"the window with Windows OCR and read the paragraph under the pointer. From then on, "
-	"hovering over that window reads its paragraphs, and scrolling the mouse wheel "
-	"recognizes it again.\n"
-	"\n"
-	"NVDA+shift+click, or NVDA+shift+enter: read from the paragraph under the pointer to "
-	"the end of the window. The mouse is ignored while it reads; any key, a click or leaving "
-	"the window stops it.\n"
-	"\n"
-	"A click or a key press drops the recognized text, since the window has probably "
-	"changed; recognize again when you need it. \"Hover reads\" below sets how much a hover "
-	"reads: a line, a paragraph, or a whole message or section."
+	"NVDA+control+click, or NVDA+control+enter: recognize the window under the mouse and read "
+	"the paragraph under the pointer. Then hover to read paragraphs; the mouse wheel "
+	"recognizes again.
+"
+	"
+"
+	"NVDA+shift+click, or NVDA+shift+enter: read from the paragraph under the pointer to the "
+	"end of the window. Any key, a click or leaving the window stops it.
+"
+	"
+"
+	"A click or a key press drops the recognized text; recognize again when you need it."
 )
 
 
@@ -102,14 +101,9 @@ class MouseReaderSettingsPanel(SettingsPanel):
 			wx.CheckBox(self, label=_("&Enable Mouse Reader"))
 		)
 		self.enabledCheckBox.SetValue(bool(section["enabled"]))
-		howTo = sHelper.addLabeledControl(
-			# Translators: label of the read-only box that explains how to use the add-on.
-			_("How to &use:"),
-			wx.TextCtrl,
-			style=wx.TE_MULTILINE | wx.TE_READONLY,
-			size=(-1, 170),
-		)
-		howTo.SetValue(HOW_TO_USE)
+		# Translators: label of the button that opens a short explanation of the add-on.
+		howToButton = sHelper.addItem(wx.Button(self, label=_("&How to use...")))
+		howToButton.Bind(wx.EVT_BUTTON, self._onHowTo)
 		self.levelChoice = sHelper.addLabeledControl(
 			# Translators: label of the dropdown that picks how much text a hover reads.
 			_("&Hover reads:"),
@@ -119,6 +113,10 @@ class MouseReaderSettingsPanel(SettingsPanel):
 		keys = [key for key, _label in LEVEL_CHOICES]
 		current = section["hoverLevel"]
 		self.levelChoice.SetSelection(keys.index(current) if current in keys else 1)
+
+	def _onHowTo(self, evt):
+		# Translators: title of the "How to use" dialog.
+		gui.messageBox(HOW_TO_USE, _("How to use Mouse Reader"), wx.OK | wx.ICON_INFORMATION, self)
 
 	def onSave(self):
 		config.conf[CONF_SECTION]["enabled"] = self.enabledCheckBox.IsChecked()
