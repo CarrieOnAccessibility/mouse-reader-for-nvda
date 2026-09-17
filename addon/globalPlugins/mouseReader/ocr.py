@@ -328,17 +328,6 @@ def speakParagraph(paragraph):
 		log.info("mouseReader: speaking a paragraph took %d ms (cancel %d ms, %d lines)" % (totalMs, cancelMs, len(paragraph.lines)))
 
 
-def stopOnMoveWanted() -> bool:
-	"""Mouse Echo Delay's "Stop speech when the mouse moves" setting, if that add-on is
-	installed; recognised paragraphs then follow the same rule as NVDA's own mouse echo."""
-	try:
-		import config
-
-		return bool(config.conf["mouseEchoDelay"]["stopOnMove"])
-	except Exception:
-		return False
-
-
 def isReadingAll() -> bool:
 	try:
 		return bool(sayAll.SayAllHandler and sayAll.SayAllHandler.isRunning())
@@ -363,7 +352,6 @@ class Snapshot:
 		self.unitsByLevel = unitsByLevel  # level -> list of Paragraph
 		self.created = time.time()
 		self._lastSpoken = None  # (level, index)
-		self._lastSpokenAt = None  # where the pointer was when it was read
 		self._doc = None  # built on first "read all"
 		self._lineOffsets = {}
 
@@ -464,23 +452,12 @@ class Snapshot:
 
 	def hover(self, x: int, y: int, level) -> bool:
 		"""Read the unit under the point when it is a different one from the unit read last.
-		The unit just read leaves things alone (so panning Magnifier does not repeat it), and
-		so does blank space, unless Mouse Echo Delay's "stop speech when the mouse moves" is on,
-		in which case leaving the unit onto blank space stops the reading (a move within a few
-		pixels of where it started, a resting hand, does not). Returns True when something was read."""
+		Blank space and the unit just read leave things alone (so panning Magnifier does not
+		repeat it). Returns True when something was read."""
 		index = self.unitAt(x, y, level)
-		if index is None:
-			if self._lastSpoken is not None and stopOnMoveWanted():
-				last = self._lastSpokenAt
-				if last is None or abs(x - last[0]) + abs(y - last[1]) > 12:
-					speech.cancelSpeech()
-					self._lastSpoken = None
-					self._lastSpokenAt = None
-			return False
-		if (level, index) == self._lastSpoken:
+		if index is None or (level, index) == self._lastSpoken:
 			return False
 		self.speakIndex(index, level)
-		self._lastSpokenAt = (x, y)
 		return True
 
 

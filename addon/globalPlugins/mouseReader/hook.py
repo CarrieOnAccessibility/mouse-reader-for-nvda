@@ -5,9 +5,9 @@
 """One wrapper around NVDA's low-level mouse hook, shared by the two features.
 
 NVDA registers a single callback with winInputHook for every mouse message. We slip in
-front of it: raw moves feed "stop speech when the mouse moves", and a click with the right
-modifiers held becomes "Read from here" and is swallowed so the app never sees it. Everything
-else goes straight through to NVDA's own callback.
+front of it: a click with the right modifiers held becomes a Mouse Reader action and is
+swallowed so the app never sees it, other clicks and the wheel are reported, and everything
+goes straight through to NVDA's own callback.
 
 Runs on NVDA's input-hook thread, never the main thread: handlers must be quick and must
 queue any real work with queueHandler.
