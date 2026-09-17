@@ -42,6 +42,7 @@ import api
 import queueHandler
 import speech
 import textInfos.offsets
+import tones
 import ui
 import winGDI
 import winUser
@@ -68,6 +69,9 @@ WHEEL_RERECOGNIZE_MS = 500
 # before OCR takes over.
 DOCUMENT_POLL_MS = 150
 DOCUMENT_WAIT_MS = 4000
+# The short beep that marks a window being recognised with OCR (when the setting is on).
+OCR_BEEP_HZ = 660
+OCR_BEEP_MS = 60
 # Consecutive lines whose tops are further apart than this many typical line pitches start a
 # new paragraph (1 = normal spacing; a blank line between messages is about 2).
 PARAGRAPH_BREAK_FACTOR = 1.55
@@ -526,9 +530,11 @@ def buildSnapshot(hwnd, rect, data):
 class OcrReader:
 	"""Runs the recognition for a click or the wheel; keeps the snapshot for hovering."""
 
-	def __init__(self, levelFunc):
-		"""levelFunc: callable returning the current level (LEVEL_LINE / _PARAGRAPH / _BLOCK)."""
+	def __init__(self, levelFunc, beepFunc=None):
+		"""levelFunc: callable returning the current level (LEVEL_LINE / _PARAGRAPH / _BLOCK).
+		beepFunc: callable returning whether a beep should mark each OCR recognition."""
 		self._level = levelFunc
+		self._beep = beepFunc or (lambda: False)
 		self.snapshot = None
 		self._pending = None  # recognizer of a recognition still in flight
 		self._wheelTimer = None
@@ -605,6 +611,11 @@ class OcrReader:
 		captureMs = int((time.time() - started) * 1000)
 		left, top, width, height = rect
 		imgInfo = _WindowImageInfo(left, top, width, height)
+		try:
+			if self._beep():
+				tones.beep(OCR_BEEP_HZ, OCR_BEEP_MS)  # OCR, as opposed to a document read: audible even when speech is cut short
+		except Exception:
+			pass
 		if not quiet:
 			# Translators: reported while the window under the mouse is being recognised.
 			ui.message(_("Recognizing"))

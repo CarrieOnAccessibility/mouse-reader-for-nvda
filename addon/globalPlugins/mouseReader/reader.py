@@ -64,9 +64,9 @@ def clickCombinationHeld():
 
 class Reader:
 	def __init__(self, settings):
-		"""settings: object with enabled() and hoverLevel() callables."""
+		"""settings: object with enabled(), hoverLevel() and beepOnOcr() callables."""
 		self._settings = settings
-		self._ocr = ocr.OcrReader(settings.hoverLevel)
+		self._ocr = ocr.OcrReader(settings.hoverLevel, settings.beepOnOcr)
 		self._lastClick = None  # (x, y, time) of the last recognising click
 
 	def shutdown(self):

@@ -46,6 +46,7 @@ LEVEL_CHOICES = (
 config.conf.spec[CONF_SECTION] = {
 	"enabled": "boolean(default=True)",
 	"hoverLevel": "option(%s, default='%s')" % (", ".join("'%s'" % key for key, _label in LEVEL_CHOICES), ocr.LEVEL_PARAGRAPH),
+	"beepOnOcr": "boolean(default=True)",
 }
 
 
@@ -58,6 +59,9 @@ class Settings:
 	def hoverLevel(self) -> str:
 		level = config.conf[CONF_SECTION]["hoverLevel"]
 		return level if level in ocr.LEVELS else ocr.LEVEL_PARAGRAPH
+
+	def beepOnOcr(self) -> bool:
+		return bool(config.conf[CONF_SECTION]["beepOnOcr"])
 
 
 # Translators: the text of the "How to use" window.
@@ -146,6 +150,11 @@ class MouseReaderSettingsPanel(SettingsPanel):
 		keys = [key for key, _label in LEVEL_CHOICES]
 		current = section["hoverLevel"]
 		self.levelChoice.SetSelection(keys.index(current) if current in keys else 1)
+		self.beepCheckBox = sHelper.addItem(
+			# Translators: label of the check box that plays a short beep whenever a window is recognised with OCR.
+			wx.CheckBox(self, label=_("Play a &beep when OCR is used"))
+		)
+		self.beepCheckBox.SetValue(bool(section["beepOnOcr"]))
 		# Translators: label of the button that opens a short explanation of the add-on.
 		howToButton = sHelper.addItem(wx.Button(self, label=_("&How to use...")))
 		howToButton.Bind(wx.EVT_BUTTON, self._onHowTo)
@@ -170,6 +179,7 @@ class MouseReaderSettingsPanel(SettingsPanel):
 	def onSave(self):
 		config.conf[CONF_SECTION]["enabled"] = self.enabledCheckBox.IsChecked()
 		config.conf[CONF_SECTION]["hoverLevel"] = LEVEL_CHOICES[self.levelChoice.GetSelection()][0]
+		config.conf[CONF_SECTION]["beepOnOcr"] = self.beepCheckBox.IsChecked()
 
 
 class GlobalPlugin(globalPluginHandler.GlobalPlugin):
