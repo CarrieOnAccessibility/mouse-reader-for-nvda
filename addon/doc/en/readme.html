@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Mouse Reader</title>
+</head>
+<body>
+<h1>Mouse Reader</h1>
+<p>Two things for people who find their way around the screen with the mouse.</p>
+<ul>
+<li><strong>A delay before reading.</strong> NVDA's mouse tracking (NVDA+M) reads whatever passes under the pointer the instant it passes. With Mouse Reader it waits until the mouse has stopped, so sweeping across the screen is quiet and only the spot you settle on is read. Everything else about mouse tracking stays as it was: moving around inside a paragraph does not repeat it, moving off onto a blank area lets it keep reading, and the text unit (character, word, line or paragraph) is still NVDA's own setting.</li>
+<li><strong>Read from here.</strong> Hold NVDA+control and click anywhere in a piece of text, and NVDA reads on from there until you press a key, the way Windows Magnifier's read-aloud does. Two commands skip back or forward a paragraph while it reads.</li>
+</ul>
+<p>When NVDA cannot find any text under the pointer, both features try a little harder before giving up: see <a href="#silent">When mouse tracking goes silent</a>.</p>
+<h2>Settings</h2>
+<p>The <strong>Mouse Reader</strong> category in <strong>NVDA menu &gt; Preferences &gt; Settings</strong>.</p>
+<ul>
+<li><strong>Wait until the mouse stops before reading under it</strong>: the delay on or off. Off, mouse tracking is exactly as NVDA ships it.</li>
+<li><strong>Delay before reading, in milliseconds</strong>: a slider from 100 (a tenth of a second) to 2000 (two seconds), in steps of 100. The arrow keys move it a step at a time and the seconds are shown beside it. 300 by default.</li>
+<li><strong>Use a custom delay instead</strong> and <strong>Custom delay in milliseconds</strong>: for a value the slider does not offer. 0 reads at once, like NVDA itself; anything up to 10 seconds is allowed.</li>
+<li><strong>Stop speech when the mouse moves</strong>: off by default. On, speech stops as soon as the mouse moves again (more than a few pixels, so a resting hand does not cut it off). It does not interrupt Read from here.</li>
+<li><strong>Try extra ways of finding text when NVDA finds none under the mouse</strong>: on by default. See <a href="#silent">below</a>.</li>
+<li><strong>Read from here with NVDA+control+click</strong>: the click trigger on or off. The command to read from the mouse position works either way.</li>
+<li><strong>Read from here starts at</strong>: the beginning of the paragraph you clicked (the default), the beginning of the line, the beginning of the word, or the exact spot.</li>
+<li><strong>Use OCR when Read from here finds no text</strong>: on by default. See <a href="#silent">below</a>.</li>
+</ul>
+<h2>Commands</h2>
+<p>All of them can be changed in NVDA's Input Gestures dialog, under the <strong>Mouse Reader</strong> category.</p>
+<ul>
+<li><strong>NVDA+control+click</strong>: read from here. The click is swallowed, so the app underneath does not see it; nothing gets selected or opened.</li>
+<li><strong>NVDA+shift+R</strong>: read from wherever the mouse pointer is, without clicking.</li>
+<li><strong>NVDA+alt+comma</strong> and <strong>NVDA+alt+period</strong>: while reading, skip back or forward a paragraph and keep reading. After reading has stopped, they continue from the previous or next paragraph.</li>
+<li><strong>NVDA+control+shift+M</strong>: the delay on or off, announced with the current delay.</li>
+<li>Any other key stops the reading, as with NVDA's own Say All.</li>
+</ul>
+<p>While Read from here is speaking, mouse tracking is paused, so moving the pointer does not cut the reading off.</p>
+<h2 id="silent">When mouse tracking goes silent</h2>
+<p>Mouse tracking asks the app "what text is at this point on the screen?", which is a different question from the one keyboard navigation asks, and one that some apps cannot answer even though NVDA can read their text with the arrow keys. When NVDA finds nothing under the pointer, Mouse Reader tries a couple of other ways of asking, all fast, and each allowed to report only text that sits under the pointer, never text nearby, so a blank spot stays blank:</p>
+<ol>
+<li>Asking Windows' UI Automation directly for the element at that point, which NVDA normally skips in some apps (Chromium-based browsers, Electron apps such as VS Code and Teams, and WinUI apps such as Windows Terminal).</li>
+<li>Asking NVDA's own record of the text that older desktop apps drew on screen (the same source its screen review uses).</li>
+</ol>
+<p>Read from here goes one step further. If nothing under the click has text at all, it OCRs the window under the pointer with Windows' built-in OCR (the same engine as NVDA+R) and starts reading from the recognised line nearest the click. The result is NVDA's usual OCR document: the arrow keys move through it, the skip commands work in it, and Escape leaves it. OCR takes a fraction of a second for a small window and a second or two for a large one, reads what is visible, and gives plain text without links or headings, which is why it is kept for a deliberate click and never runs during ordinary mouse tracking.</p>
+<p>Some silences are outside any add-on's reach: the lock screen and other secure screens, and apps running as administrator when NVDA is a portable copy.</p>
+<h2>Licence</h2>
+<p>Copyright &copy; 2026 Carrie on Accessibility. Free software under the GNU General Public License, version 2, the same licence as NVDA.</p>
+</body>
+</html>
