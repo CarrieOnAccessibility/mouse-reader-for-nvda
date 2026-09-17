@@ -249,6 +249,21 @@ class _ParagraphResult:
 		return ParagraphLinesWordsResult(data, imgInfo)
 
 
+def speakParagraph(paragraph):
+	"""Speak a whole paragraph, handed to the voice in sentence-sized pieces.
+
+	One long utterance (a whole Slack message) is what froze NVDA's voice bridge; NVDA's own
+	Say All avoids that with SpeechWithoutPauses, which buffers text and only sends it to the
+	synthesizer at sentence or phrase boundaries. Used here the paragraph still sounds like one
+	continuous read."""
+	from speech.speechWithoutPauses import SpeechWithoutPauses
+
+	reader = SpeechWithoutPauses(speakFunc=speech.speak)
+	for line in paragraph.lines:
+		reader.speakWithoutPauses([" ".join(w["text"] for w in line) + " "])
+	reader.speakWithoutPauses(None)  # flush whatever is left
+
+
 class Snapshot:
 	"""One OCRed window: its paragraphs, and a recognition result object to read them with."""
 
@@ -328,7 +343,7 @@ class Snapshot:
 			return False
 		self._lastHovered = index
 		speech.cancelSpeech()
-		speech.speakText(self.paragraphs[index].text)
+		speakParagraph(self.paragraphs[index])
 		return True
 
 	def markCurrent(self, index):
