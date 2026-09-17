@@ -22,6 +22,7 @@ from scriptHandler import script
 import wx
 
 from . import hook, readfrom
+import speech
 
 try:
 	addonHandler.initTranslation()
@@ -136,12 +137,23 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 
 	# ---- commands -----------------------------------------------------------------------
 
+	@staticmethod
+	def _unpause():
+		"""Shift on its own pauses NVDA's speech, and Shift is part of these shortcuts: NVDA's
+		own state is reset by the cancel that follows, but the voice driver can stay paused
+		(seen with the 32-bit voice bridge). Tell it to resume before reading starts."""
+		try:
+			speech.pauseSpeech(False)
+		except Exception:
+			log.debugWarning("mouseReader: could not resume speech", exc_info=True)
+
 	@script(
 		# Translators: description of the command that reads continuously from the mouse position.
 		description=_("Reads from the text under the mouse onwards (same as NVDA+control+click)"),
 		gesture="kb:NVDA+shift+r",
 	)
 	def script_readFromMouse(self, gesture):
+		self._unpause()
 		self.readFrom.readFromMouse()
 
 	@script(
@@ -150,6 +162,7 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 		gesture="kb:NVDA+control+shift+r",
 	)
 	def script_recognizeWindow(self, gesture):
+		self._unpause()
 		self.readFrom.recognizeAtMouse()
 
 	@script(
@@ -157,6 +170,7 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 		description=_("Moves the review cursor to the text under the mouse without reading"),
 	)
 	def script_moveReviewToMouse(self, gesture):
+		self._unpause()
 		self.readFrom.moveReviewToMouse()
 
 	@script(
@@ -165,6 +179,7 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 		gesture="kb:NVDA+alt+,",
 	)
 	def script_skipBack(self, gesture):
+		self._unpause()
 		self.readFrom.skip(-1)
 
 	@script(
@@ -173,4 +188,5 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 		gesture="kb:NVDA+alt+.",
 	)
 	def script_skipForward(self, gesture):
+		self._unpause()
 		self.readFrom.skip(1)
