@@ -128,15 +128,17 @@ def captureWindow(hwnd, rect):
 
 
 class Paragraph:
-	__slots__ = ("words", "left", "top", "right", "bottom", "offset")
+	__slots__ = ("lines", "words", "left", "top", "right", "bottom", "offset", "end")
 
-	def __init__(self, words):
-		self.words = words  # word dicts in reading order, picture coordinates
-		self.left = min(w["x"] for w in words)
-		self.top = min(w["y"] for w in words)
-		self.right = max(w["x"] + w["width"] for w in words)
-		self.bottom = max(w["y"] + w["height"] for w in words)
+	def __init__(self, lines):
+		self.lines = lines  # lists of word dicts, one per OCR line, in reading order
+		self.words = [w for line in lines for w in line]  # picture coordinates
+		self.left = min(w["x"] for w in self.words)
+		self.top = min(w["y"] for w in self.words)
+		self.right = max(w["x"] + w["width"] for w in self.words)
+		self.bottom = max(w["y"] + w["height"] for w in self.words)
 		self.offset = 0  # start offset in the result text, set once the result is built
+		self.end = 0  # end offset (after the last line's newline)
 
 	@property
 	def text(self):
@@ -186,9 +188,9 @@ def groupParagraphs(data):
 			if overlap > bestOverlap:
 				best, bestOverlap = p, overlap
 		if best is None:
-			paragraphs.append(dict(line, words=list(line["words"])))
+			paragraphs.append(dict(line, lines=[line["words"]]))
 			continue
-		best["words"].extend(line["words"])
+		best["lines"].append(line["words"])
 		best["bottom"] = max(best["bottom"], line["bottom"])
 		best["left"] = min(best["left"], line["left"])
 		best["right"] = max(best["right"], line["right"])
@@ -209,7 +211,42 @@ def groupParagraphs(data):
 	ordered = []
 	for column in columns:
 		ordered.extend(sorted(column["items"], key=lambda p: (p["top"], p["left"])))
-	return [Paragraph(p["words"]) for p in ordered]
+	return [Paragraph(p["lines"]) for p in ordered]
+
+
+class _ParagraphResult:
+	"""Builds NVDA's LinesWordsResult over the OCR *lines* (short reading chunks for Say All,
+	which matters for the voice) while a TextInfo subclass knows the paragraph boundaries,
+	so skipping by paragraph and "beginning of the paragraph" use the grouped paragraphs."""
+
+	@staticmethod
+	def build(paragraphs, imgInfo):
+		from contentRecog import LinesWordsResult, LwrTextInfo
+
+		data = [line for p in paragraphs for line in p.lines]
+		offset = 0
+		for p in paragraphs:
+			p.offset = offset
+			for line in p.lines:
+				offset += sum(len(w["text"]) for w in line) + max(len(line) - 1, 0) + 1  # spaces + newline
+			p.end = offset
+		bounds = [(p.offset, p.end) for p in paragraphs]
+
+		class ParagraphTextInfo(LwrTextInfo):
+			def _getParagraphOffsets(self, offset):
+				for start, end in bounds:
+					if start <= offset < end:
+						return (start, end)
+				return self._getLineOffsets(offset)
+
+			def copy(self):
+				return self.__class__(self.obj, self.bookmark, self.result)
+
+		class ParagraphLinesWordsResult(LinesWordsResult):
+			def makeTextInfo(self, obj, position):
+				return ParagraphTextInfo(obj, position, self)
+
+		return ParagraphLinesWordsResult(data, imgInfo)
 
 
 class Snapshot:
@@ -301,16 +338,12 @@ class Snapshot:
 
 def buildSnapshot(hwnd, rect, data, imgInfo):
 	"""Turn Windows OCR output into a Snapshot whose result has one line per paragraph."""
-	from contentRecog import LinesWordsResult, recogUi
+	from contentRecog import recogUi
 
 	paragraphs = groupParagraphs(data)
 	if not paragraphs:
 		return None
-	result = LinesWordsResult([p.words for p in paragraphs], imgInfo)
-	offset = 0
-	for p in paragraphs:
-		p.offset = offset
-		offset += len(p.text) + 1  # the newline LinesWordsResult adds after each line
+	result = _ParagraphResult.build(paragraphs, imgInfo)
 	# NVDA's own recognition-result object, never focused: it only gives Say All a text to read.
 	doc = recogUi.RecogResultNVDAObject(result=result)
 	return Snapshot(hwnd, rect, paragraphs, result, doc)
@@ -350,22 +383,27 @@ class OcrReader:
 				self._pending.cancel()  # a second click before the first OCR came back
 			except Exception:
 				pass
+		started = time.time()
 		try:
 			pixels, rendered = captureWindow(hwnd, rect)
 		except Exception:
 			log.exception("mouseReader: could not capture the window")
 			return False
+		captureMs = int((time.time() - started) * 1000)
 		left, top, width, height = rect
 		imgInfo = _WindowImageInfo(left, top, width, height)
 		# Translators: reported while the window under the mouse is being OCRed.
 		ui.message(_("Recognizing"))
 		log.info(
-			"mouseReader: OCR of window %s at %r (%s)" % (hwnd, rect, "rendered by the window" if rendered else "screen photo")
+			"mouseReader: OCR of window %s at %r (%s, captured in %d ms)"
+			% (hwnd, rect, "rendered by the window" if rendered else "screen photo", captureMs)
 		)
 		self._pending = recognizer
+		sent = time.time()
 
 		def onResult(result):
 			# Recogniser thread: hand over to the main thread.
+			log.info("mouseReader: OCR engine answered after %d ms" % int((time.time() - sent) * 1000))
 			queueHandler.queueFunction(queueHandler.eventQueue, self._onResult, recognizer, hwnd, rect, result, imgInfo, x, y, startUnit, readAfter)
 
 		try:
@@ -395,7 +433,7 @@ class OcrReader:
 			ui.message(_("No text recognized"))
 			return
 		self.snapshot = snapshot
-		log.info("mouseReader: OCR found %d paragraphs" % len(snapshot.paragraphs))
+		log.info("mouseReader: OCR found %d paragraphs (%d lines)" % (len(snapshot.paragraphs), sum(len(p.lines) for p in snapshot.paragraphs)))
 		if not readAfter:
 			# Translators: reported after a window has been recognised; {count} paragraphs were found.
 			ui.message(_("Recognized {count} paragraphs; hover to read them").format(count=len(snapshot.paragraphs)))
