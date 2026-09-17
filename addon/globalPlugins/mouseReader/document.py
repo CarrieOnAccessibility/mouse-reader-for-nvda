@@ -28,6 +28,11 @@ Levels. Paragraph is the buffer's paragraph (a <p>, a list item, a heading, a PD
 Line is the visual line of the element under the pointer, as the app reports it. Block is
 the node one up from the paragraph's (a list, a section, a table cell, a PDF page region).
 
+NVDA builds its copy of a page only when the page gets focus, so right after NVDA starts, or
+for a window that has not been focused since, there is none. Then the add-on asks NVDA to
+build it, exactly as focus would, waits for it to load, and carries on. OCR is only for a
+window that is not a document at all, or one whose copy never finishes loading.
+
 Nothing is frozen: hovering asks the live document each time, so scrolling needs no second
 recognition. Blank space inside the document (margins, gaps between paragraphs) stays quiet,
 as it does over a picture; controls (a button, an edit field) and anything outside the
@@ -70,6 +75,8 @@ HOVER_LOG_LIMIT = 8
 # many of those walks to log per snapshot.
 MAX_DESCENT = 10
 DESCENT_LOG_LIMIT = 4
+# How far up from the element under the mouse to look for the page it is in.
+MAX_ROOT_SEARCH = 40
 
 # Roles whose element, or whose text leaf, counts as text under the pointer. Anything else with
 # children is a container (blank space); anything else without children is a control.
@@ -112,38 +119,114 @@ def describe(obj) -> str:
 	return "%s %r (%s children)" % (role, name, children)
 
 
+class Loading:
+	"""NVDA is building its copy of the page under the mouse; ask again shortly."""
+
+	def __init__(self, ti):
+		self.ti = ti
+
+	def ready(self) -> bool:
+		try:
+			return bool(self.ti.isAlive) and not getattr(self.ti, "isLoading", False) and bool(self.ti.isReady)
+		except Exception:
+			return False
+
+	def alive(self) -> bool:
+		try:
+			return bool(self.ti.isAlive)
+		except Exception:
+			return False
+
+
+def _isBuffer(ti) -> bool:
+	from virtualBuffers import VirtualBuffer
+
+	return isinstance(ti, VirtualBuffer)
+
+
 def bufferOf(obj):
-	"""The in-process browse-mode buffer that holds obj, when there is one and it is ready."""
+	"""The browse-mode copy of the page holding obj: a ready in-process buffer, or Loading while
+	NVDA is still building it, or None when there is none (or it is not an in-process one)."""
 	if obj is None:
 		return None
 	try:
-		from virtualBuffers import VirtualBuffer
-
 		ti = obj.treeInterceptor
 		if ti is None:
 			return None
-		if not isinstance(ti, VirtualBuffer):
+		if not _isBuffer(ti):
 			log.info("mouseReader: the document under the mouse is not an in-process buffer (%s); using OCR" % type(ti).__name__)
 			return None
-		if getattr(ti, "isLoading", False) or not ti.isReady or not ti.isAlive:
-			log.info("mouseReader: the document under the mouse is still loading; using OCR")
-			return None
-		return ti
+		loading = Loading(ti)
+		return ti if loading.ready() else loading
 	except Exception:
 		log.debugWarning("mouseReader: could not look for a document under the mouse", exc_info=True)
 		return None
 
 
-def documentAt(x: int, y: int):
-	"""(DocumentSnapshot, element under the point) when the point is in a browse-mode document,
-	else None."""
+def buildBufferFor(obj):
+	"""No copy of the page yet: ask NVDA to build one for the outermost page holding obj, the
+	way it does when focus enters a page. The buffer (probably still loading), or None when
+	NVDA would not treat that window as a document."""
+	import treeInterceptorHandler
+
+	root = None
+	o = obj
+	for _ in range(MAX_ROOT_SEARCH):
+		if o is None:
+			break
+		try:
+			if o.treeInterceptorClass is not None:
+				root = o
+		except Exception:
+			pass
+		try:
+			o = o.parent
+		except Exception:
+			break
+	if root is None:
+		return None
+	try:
+		ti = treeInterceptorHandler.update(root)
+	except Exception:
+		log.debugWarning("mouseReader: NVDA could not build a document for the page under the mouse", exc_info=True)
+		return None
+	if ti is None or not _isBuffer(ti):
+		return None
+	return ti
+
+
+def documentAt(x: int, y: int, build: bool = True, known=None):
+	"""What is under the point: (DocumentSnapshot, element) for a ready browse-mode document,
+	a Loading while NVDA builds its copy of the page (asked for when build is True), or None
+	when the point is not in a document NVDA can read. known: a buffer already asked for, to
+	look at again instead of searching (while it loads, the element does not yet say it is in
+	it)."""
 	found = ocr.windowAt(x, y)
 	if found is None:
 		return None
 	obj = objectAt(x, y)
-	ti = bufferOf(obj)
-	if ti is None:
-		return None
+	if known is not None:
+		loading = Loading(known)
+		if not loading.alive():
+			return None
+		if not loading.ready():
+			return loading
+		ti = known
+	else:
+		ti = bufferOf(obj)
+		if ti is None and build and obj is not None:
+			ti = buildBufferFor(obj)
+			if ti is None:
+				log.info("mouseReader: no document under the mouse (%s); using OCR" % describe(obj))
+				return None
+			log.info("mouseReader: NVDA had not loaded the page under the mouse yet; asked it to (%s)" % type(ti).__name__)
+			loading = Loading(ti)
+			if not loading.ready():
+				return loading
+		if ti is None:
+			return None
+		if isinstance(ti, Loading):
+			return ti
 	hwnd, rect = found
 	return DocumentSnapshot(hwnd, rect, ti), obj
 

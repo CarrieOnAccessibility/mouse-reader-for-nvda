@@ -64,6 +64,10 @@ PW_RENDERFULLCONTENT = 0x00000002
 SNAPSHOT_LIFETIME_SECONDS = 180
 # After the wheel stops turning over a recognised window, recognise it again this much later.
 WHEEL_RERECOGNIZE_MS = 500
+# While NVDA builds its copy of the page under the mouse: how often to look, and for how long
+# before OCR takes over.
+DOCUMENT_POLL_MS = 150
+DOCUMENT_WAIT_MS = 4000
 # Consecutive lines whose tops are further apart than this many typical line pitches start a
 # new paragraph (1 = normal spacing; a blank line between messages is about 2).
 PARAGRAPH_BREAK_FACTOR = 1.55
@@ -529,6 +533,7 @@ class OcrReader:
 		self._pending = None  # recognizer of a recognition still in flight
 		self._wheelTimer = None
 		self._wheelPos = None
+		self._request = 0  # counts starts, so a wait for a loading document knows when it is stale
 
 	def _setSnapshot(self, snapshot):
 		"""Replace the snapshot, letting the old one stop any timer of its own first."""
@@ -557,23 +562,28 @@ class OcrReader:
 				pass
 			self._pending = None
 
-	def start(self, x: int, y: int, quiet: bool = False, readAllAfter: bool = False) -> bool:
-		"""Begin recognising the window under the point. Returns False if there is no window.
-		Once recognised, the paragraph under the point is read, or, with readAllAfter, NVDA's
-		Say All reads on from it. quiet: a refresh after scrolling, with no "Recognizing"
-		announcement."""
+	def start(self, x: int, y: int, quiet: bool = False, readAllAfter: bool = False, allowDocument: bool = True) -> bool:
+		"""Begin reading the window under the point. Returns False if there is no window. A
+		browse-mode document under the point answers itself (document.py); anything else is
+		recognised with OCR. Once known, the paragraph under the point is read, or, with
+		readAllAfter, NVDA's Say All reads on from it. quiet: a refresh after scrolling, with no
+		"Recognizing" announcement."""
+		found = windowAt(x, y)
+		if found is None:
+			return False
+		hwnd, rect = found
+		self._request += 1
+		if allowDocument and self._startDocument(x, y, quiet, readAllAfter):
+			return True
+		return self._startOcr(x, y, hwnd, rect, quiet, readAllAfter)
+
+	def _startOcr(self, x, y, hwnd, rect, quiet, readAllAfter) -> bool:
 		try:
 			from contentRecog import uwpOcr
 		except Exception:
 			log.debugWarning("mouseReader: OCR modules unavailable", exc_info=True)
 			# Translators: message when Windows OCR cannot be used.
 			ui.message(_("OCR is not available"))
-			return True
-		found = windowAt(x, y)
-		if found is None:
-			return False
-		hwnd, rect = found
-		if self._startDocument(x, y, quiet, readAllAfter):
 			return True
 		try:
 			recognizer = uwpOcr.UwpOcr()
@@ -618,19 +628,33 @@ class OcrReader:
 			ui.message(_("OCR is not available"))
 		return True
 
-	def _startDocument(self, x: int, y: int, quiet: bool, readAllAfter: bool) -> bool:
+	def _startDocument(self, x: int, y: int, quiet: bool, readAllAfter: bool, waiting=None, waited: int = 0) -> bool:
 		"""If the point is in a browse-mode document, let the document answer the mouse (no OCR)
-		and read what is under the point now. False when there is no such document."""
+		and read what is under the point now. While NVDA is still building its copy of the page,
+		look again shortly (OCR takes over if it never finishes). False when there is no such
+		document."""
 		from . import document
 
 		try:
-			found = document.documentAt(x, y)
+			found = document.documentAt(x, y, build=waiting is None, known=waiting.ti if waiting is not None else None)
 		except Exception:
 			log.exception("mouseReader: could not look for a document under the mouse")
 			return False
 		if found is None:
 			return False
+		if isinstance(found, document.Loading):
+			if waited == 0 and not quiet:
+				# Translators: reported while NVDA loads the page under the mouse before reading it.
+				ui.message(_("Loading"))
+			if waited >= DOCUMENT_WAIT_MS or not found.alive():
+				log.info("mouseReader: the page under the mouse did not finish loading in %d ms; using OCR" % waited)
+				return False
+			request = self._request
+			wx.CallLater(DOCUMENT_POLL_MS, self._documentTick, request, x, y, quiet, readAllAfter, found, waited + DOCUMENT_POLL_MS)
+			return True
 		snapshot, obj = found
+		if waited:
+			log.info("mouseReader: the page under the mouse loaded after about %d ms" % waited)
 		if self._pending is not None:
 			try:
 				self._pending.cancel()  # an OCR still in flight would overwrite this snapshot
@@ -653,6 +677,19 @@ class OcrReader:
 		if not snapshot.speakAt(x, y, level, obj):
 			ui.message(NO_TEXT_UNDER_MOUSE)  # a control or the bare margin: nothing to ask again about
 		return True
+
+	def _documentTick(self, request, x, y, quiet, readAllAfter, waiting, waited):
+		"""A moment later: is NVDA's copy of the page ready? Then read from it; else wait more,
+		or give up and recognise the window instead."""
+		if request != self._request:
+			return  # a newer click or scroll has taken over
+		if self._startDocument(x, y, quiet, readAllAfter, waiting=waiting, waited=waited):
+			return
+		found = windowAt(x, y)
+		if found is None:
+			return
+		hwnd, rect = found
+		self._startOcr(x, y, hwnd, rect, quiet, readAllAfter)
 
 	def _onResult(self, recognizer, hwnd, rect, result, x, y, quiet, readAllAfter=False):
 		if self._pending is not recognizer:
