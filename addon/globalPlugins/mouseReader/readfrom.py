@@ -209,7 +209,7 @@ class ReadFromHere:
 		if self._ocr.snapshot is None:
 			return
 		if not self._ocr.snapshot.contains(x, y):
-			return
+			return  # cheap rectangle test first; the window check happens inside hover()
 		if nvdaHasTextAt(obj, x, y):
 			return
 		self._ocr.hover(x, y)
@@ -256,11 +256,9 @@ class ReadFromHere:
 		x, y = winUser.getCursorPos()
 		startUnit = START_UNITS.get(self._settings.readFromStart(), textInfos.UNIT_PARAGRAPH)
 		obj, info, pointSupported = objectAndTextInfoAt(x, y)
-		if info is None:
-			snapshot = self._ocr.snapshot
-			if snapshot is not None and snapshot.isFresh() and snapshot.contains(x, y):
-				info = self._ocr.textInfoAt(x, y, startUnit)
-				obj = None
+		if info is None and self._ocr.snapshotFor(x, y) is not None:
+			info = self._ocr.textInfoAt(x, y, startUnit)
+			obj = None
 		if info is None:
 			ui.message(_("No text under the mouse"))
 			return
@@ -309,8 +307,7 @@ class ReadFromHere:
 				return
 			except Exception:
 				log.exception("mouseReader: could not start reading from the text under the mouse")
-		snapshot = self._ocr.snapshot
-		if snapshot is not None and snapshot.isFresh() and snapshot.contains(x, y):
+		if self._ocr.snapshotFor(x, y) is not None:
 			startUnit = START_UNITS.get(self._settings.readFromStart(), textInfos.UNIT_PARAGRAPH)
 			if self._ocr.readFromSnapshot(x, y, startUnit):
 				return

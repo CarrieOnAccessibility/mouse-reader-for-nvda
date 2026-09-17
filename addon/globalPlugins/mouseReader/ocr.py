@@ -231,6 +231,15 @@ class Snapshot:
 		left, top, width, height = self.rect
 		return left <= x < left + width and top <= y < top + height
 
+	def covers(self, x: int, y: int) -> bool:
+		"""Is the point inside this snapshot *and* is its window still the one under the point?
+		Two maximised windows share the same rectangle, so the rectangle alone is not enough:
+		a snapshot of VS Code must not answer for Slack."""
+		if not self.contains(x, y):
+			return False
+		found = windowAt(x, y)
+		return found is not None and found[0] == self.hwnd
+
 	def _toPicture(self, x, y):
 		return x - self.rect[0], y - self.rect[1]
 
@@ -396,7 +405,7 @@ class OcrReader:
 
 	def textInfoAt(self, x: int, y: int, startUnit):
 		"""A TextInfo on the snapshot's result at the paragraph (or word) under the point."""
-		snapshot = self.snapshot
+		snapshot = self.snapshotFor(x, y)
 		if snapshot is None:
 			return None
 		index = snapshot.nearestParagraph(x, y)
@@ -432,15 +441,22 @@ class OcrReader:
 
 	# ---- hover ---------------------------------------------------------------------------
 
-	def hover(self, x: int, y: int) -> bool:
-		"""Called for every mouse move NVDA reports. True if the snapshot spoke for this spot."""
+	def snapshotFor(self, x: int, y: int):
+		"""The snapshot, if it is fresh and belongs to the window under the point; else None."""
 		snapshot = self.snapshot
 		if snapshot is None:
-			return False
+			return None
 		if not snapshot.isFresh():
 			self.snapshot = None
-			return False
-		if not snapshot.contains(x, y):
+			return None
+		if not snapshot.covers(x, y):
+			return None
+		return snapshot
+
+	def hover(self, x: int, y: int) -> bool:
+		"""Called for every mouse move NVDA reports. True if the snapshot spoke for this spot."""
+		snapshot = self.snapshotFor(x, y)
+		if snapshot is None:
 			return False
 		return snapshot.hover(x, y)
 
