@@ -11,31 +11,29 @@ cursor, so it stops on any key press, scrolls the document, and follows NVDA's S
 settings. Because Say All keeps the review cursor on the text being spoken, "skip back" and
 "skip forward" are simply: stop, move the review cursor a paragraph, read again.
 
-The starting point is found the way NVDA's own mouse tracking finds it: the object under the
-point, and the text position at the point within it. In a browse mode document (a web page)
-the position is carried into the document so reading continues past the paragraph that was
-clicked. When nothing under the pointer has text at all, and the option is on, the window
-under the pointer is OCRed with NVDA's built-in Windows OCR and reading starts from the
-recognised line nearest the click; that result is NVDA's usual OCR document (Escape leaves it).
+Finding the starting point runs the fast rungs of the lookup ladder (ladder.py). In a browse
+mode document (a web page) the position is carried into the document so reading continues
+past the paragraph that was clicked. When nothing under the pointer has text at all, and the
+option is on, the window under the pointer is OCRed with NVDA's built-in Windows OCR and
+reading starts from the recognised line nearest the click; that result is NVDA's usual OCR
+document (Escape leaves it).
 """
 
 from ctypes.wintypes import POINT
 
 import addonHandler
 import api
-import config
-import controlTypes
 import keyboardHandler
-import locationHelper
 import queueHandler
 import textInfos
 import textInfos.offsets
-import textUtils
 import treeInterceptorHandler
 import ui
 import winUser
 from logHandler import log
 from speech import sayAll
+
+from . import ladder
 
 try:
 	addonHandler.initTranslation()
@@ -53,84 +51,19 @@ _CONTROL_KEYS = (winUser.VK_CONTROL, winUser.VK_LCONTROL, winUser.VK_RCONTROL)
 
 
 def modifiersHeld() -> bool:
-	"""Is NVDA+control held right now? The NVDA key never reaches Windows, so only NVDA's own
-	record of held modifiers knows about it; control is checked there and with Windows too."""
+	"""Is NVDA+control held right now? NVDA tracks held modifiers itself (the NVDA key never
+	reaches Windows, so its key state cannot be asked for)."""
 	mods = set(keyboardHandler.currentModifiers)
 	nvda = any(keyboardHandler.isNVDAModifierKey(vk, ext) for vk, ext in mods)
 	ctrl = any(vk in _CONTROL_KEYS for vk, ext in mods)
-	if not ctrl:
-		try:
-			ctrl = bool(winUser.getKeyState(winUser.VK_CONTROL) & 0x8000)
-		except Exception:
-			ctrl = False
 	return nvda and ctrl
 
 
-CONTAINER_ROLES = frozenset(
-	role
-	for role in (
-		getattr(controlTypes.Role, name, None)
-		for name in (
-			"UNKNOWN", "WINDOW", "PANE", "DIALOG", "FRAME", "DOCUMENT", "APPLICATION", "GROUPING",
-			"PROPERTYPAGE", "CANVAS", "GLASSPANE", "LAYEREDPANE", "ROOTPANE", "SCROLLPANE",
-			"SECTION", "SPLITPANE", "DESKTOPPANE", "PANEL", "LANDMARK", "REGION",
-		)
-	)
-	if role is not None
-)
-
-
-def isBlank(text) -> bool:
-	"""NVDA's own test from NVDAObject.event_mouseMove: nothing but whitespace and object marks."""
-	if not text:
-		return True
-	for ch in text:
-		if not ch.isspace() and ch != textUtils.OBJ_REPLACEMENT_CHAR:
-			return False
-	return True
-
-
-def objectAndTextInfoAt(x: int, y: int):
-	"""(object, TextInfo at the point, pointSupported) the way NVDA's mouse tracking sees it.
-
-	info is None when nothing under the point has text at all (the caller may then OCR).
-	pointSupported is False when the object cannot map a point to text and info is merely the
-	start of its own text (a button's label, say).
-	"""
-	try:
-		obj = api.getDesktopObject().objectFromPoint(x, y)
-	except Exception:
-		log.debugWarning("mouseReader: objectFromPoint failed", exc_info=True)
-		return None, None, False
-	while obj and getattr(obj, "beTransparentToMouse", False):
-		obj = obj.parent
-	if obj is None:
-		return None, None, False
-	try:
-		return obj, obj.makeTextInfo(locationHelper.Point(x, y)), True
-	except (NotImplementedError, LookupError):
-		pass
-	except Exception:
-		log.debugWarning("mouseReader: makeTextInfo(Point) failed", exc_info=True)
-	# The object cannot map a point to text. Its own text (a label) is still worth reading,
-	# unless it is a bare container, whose name says nothing about the spot clicked.
-	try:
-		if obj.role in CONTAINER_ROLES:
-			return obj, None, False
-		info = obj.makeTextInfo(textInfos.POSITION_FIRST)
-		probe = info.copy()
-		probe.expand(textInfos.UNIT_STORY)
-		if isBlank(probe.text):
-			return obj, None, False
-		return obj, info, False
-	except Exception:
-		return obj, None, False
-
-
 class ReadFromHere:
-	def __init__(self, settings):
+	def __init__(self, settings, dwellEngine):
 		"""settings: object with readFromClick(), readFromStart(), readFromOcr() callables."""
 		self._settings = settings
+		self._dwell = dwellEngine
 		self._sessionMode = None  # sayAll.CURSOR of the reading we started, or None
 		self._ocrDoc = None
 
@@ -158,13 +91,10 @@ class ReadFromHere:
 
 	def onButton(self, msg, x, y, injected) -> bool:
 		"""Low-level hook (hook thread): True to swallow the click and read from that point."""
-		if not self._settings.readFromClick():
+		if injected or not self._settings.readFromClick():
 			return False
-		if injected and config.conf["mouse"]["ignoreInjectedMouseInput"]:
-			return False  # NVDA's own rule for clicks generated by other software
 		if not modifiersHeld():
 			return False
-		log.info("mouseReader: NVDA+control+click at (%d, %d)" % (x, y))
 		queueHandler.queueFunction(queueHandler.eventQueue, self.readFrom, x, y)
 		return True
 
@@ -178,15 +108,12 @@ class ReadFromHere:
 		"""Main thread. Find text at the point and start reading from it."""
 		self.stop()
 		self._sessionMode = None
+		self._dwell.forgetLadder()
 		try:
-			obj, info, pointSupported = objectAndTextInfoAt(x, y)
+			obj, info, pointSupported = ladder.objectAndTextInfoAt(x, y)
 		except Exception:
 			log.exception("mouseReader: could not look up the text under the mouse")
 			obj, info, pointSupported = None, None, False
-		log.info(
-			"mouseReader: read from (%d, %d): object %r, text %s"
-			% (x, y, obj, "at the point" if pointSupported else ("from its start" if info is not None else "none"))
-		)
 		if info is not None:
 			try:
 				self._startFromInfo(obj, info, pointSupported)
