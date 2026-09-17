@@ -5,7 +5,8 @@
 # Mouse Reader add-on for NVDA: global plugin entry point.
 #
 # "Read from here": NVDA+control+click (or NVDA+shift+R) reads continuously from the text
-# under the mouse, with skip-back / skip-forward commands and an OCR fallback (readfrom.py).
+# under the mouse, with skip-back / skip-forward commands (readfrom.py) and an OCR fallback
+# whose snapshot also reads paragraphs on hover (ocr.py).
 # This module is the NVDA plumbing: config, the Settings category, the commands, and the
 # low-level mouse hook that catches the click (hook.py).
 #
@@ -125,6 +126,13 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 		except Exception:
 			log.exception("mouseReader: could not remove the mouse hook")
 		super().terminate()
+
+	def event_mouseMove(self, obj, nextHandler, x, y):
+		try:
+			self.readFrom.onMouseMove(obj, x, y)
+		except Exception:
+			log.debugWarning("mouseReader: hover failed", exc_info=True)
+		nextHandler()
 
 	# ---- commands -----------------------------------------------------------------------
 

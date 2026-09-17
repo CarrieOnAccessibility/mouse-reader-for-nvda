@@ -15,12 +15,11 @@ The starting point is found the way NVDA's own mouse tracking finds it: the obje
 point, and the text position at the point within it. In a browse mode document (a web page)
 the position is carried into the document so reading continues past the paragraph that was
 clicked. When nothing under the pointer has text at all, and the option is on, the window
-under the pointer is OCRed with NVDA's built-in Windows OCR and reading starts from the
-recognised line nearest the click; that result is NVDA's usual OCR document (Escape leaves it).
+under the pointer is OCRed (ocr.py) and reading starts from the recognised paragraph nearest
+the click, with nothing opened and nothing to close; the snapshot then reads paragraphs on
+hover for a few minutes.
 """
 
-from ctypes import byref
-from ctypes.wintypes import POINT, RECT
 import math
 import time
 
@@ -32,14 +31,14 @@ import keyboardHandler
 import locationHelper
 import queueHandler
 import textInfos
-import textInfos.offsets
 import textUtils
 import treeInterceptorHandler
 import ui
 import winUser
 from logHandler import log
 from speech import sayAll
-from winBindings import user32
+
+from . import ocr
 
 try:
 	addonHandler.initTranslation()
@@ -97,6 +96,33 @@ def isBlank(text) -> bool:
 	return True
 
 
+def nvdaHasTextAt(obj, x: int, y: int) -> bool:
+	"""Would NVDA's own mouse tracking have something to read for obj at the point? (Mirrors
+	NVDAObject.event_mouseMove; the "same chunk as before" silence counts as having text.)"""
+	if obj is None:
+		return False
+	try:
+		info = obj.makeTextInfo(locationHelper.Point(x, y))
+	except NotImplementedError:
+		# Only the object's own label is available: real for a control, meaningless for a container.
+		try:
+			if obj.role in CONTAINER_ROLES:
+				return False
+			return not isBlank(obj.name)
+		except Exception:
+			return False
+	except LookupError:
+		return False
+	except Exception:
+		log.debugWarning("mouseReader: text lookup failed; assuming NVDA has text", exc_info=True)
+		return True
+	try:
+		info.expand(info.unit_mouseChunk)
+		return not isBlank(info.text)
+	except Exception:
+		return True
+
+
 def objectAndTextInfoAt(x: int, y: int):
 	"""(object, TextInfo at the point, pointSupported) the way NVDA's mouse tracking sees it.
 
@@ -139,7 +165,7 @@ class ReadFromHere:
 		"""settings: object with readFromClick(), readFromStart(), readFromOcr() callables."""
 		self._settings = settings
 		self._sessionMode = None  # sayAll.CURSOR of the reading we started, or None
-		self._ocrDoc = None
+		self._ocr = ocr.OcrReader(self)
 		self._lastStart = None  # (x, y, time) of the last click that started a reading
 
 	# ---- state ------------------------------------------------------------------------
@@ -161,6 +187,21 @@ class ReadFromHere:
 				handler.stop()
 			except Exception:
 				pass
+
+	def sessionStarted(self, mode):
+		self._sessionMode = mode
+
+	def onMouseMove(self, obj, x: int, y: int):
+		"""Every mouse move NVDA reports (after any delay add-on has had its say). If a fresh OCR
+		snapshot covers the spot and NVDA itself has no text there, read the snapshot's
+		paragraph under the pointer."""
+		if self._ocr.snapshot is None:
+			return
+		if not self._ocr.snapshot.contains(x, y):
+			return
+		if nvdaHasTextAt(obj, x, y):
+			return
+		self._ocr.hover(x, y)
 
 	# ---- triggers ---------------------------------------------------------------------
 
@@ -322,176 +363,6 @@ class ReadFromHere:
 	# ---- OCR fallback -------------------------------------------------------------------
 
 	def _startOcr(self, x: int, y: int):
-		try:
-			from contentRecog import RecogImageInfo, recogUi, uwpOcr
-		except Exception:
-			log.debugWarning("mouseReader: OCR modules unavailable", exc_info=True)
-			# Translators: message when Windows OCR cannot be used.
-			ui.message(_("OCR is not available"))
-			return
-		if isinstance(api.getFocusObject(), recogUi.RecogResultNVDAObject):
-			# Translators: message when Read from here is used while an OCR result is already open.
-			ui.message(_("Already in an OCR result; press Escape to leave it first"))
-			return
-		try:
-			recognizer = uwpOcr.UwpOcr()
-		except Exception:
-			log.debugWarning("mouseReader: could not create the OCR recognizer", exc_info=True)
-			ui.message(_("OCR is not available"))
-			return
-		rect = _windowRectAt(x, y)
-		if rect is None:
-			ui.message(_("No text under the mouse"))
-			return
-		left, top, width, height = rect
-		try:
-			imgInfo = RecogImageInfo.createFromRecognizer(left, top, width, height, recognizer)
-		except ValueError:
-			ui.message(_("No text under the mouse"))
-			return
 		startUnit = START_UNITS.get(self._settings.readFromStart(), textInfos.UNIT_PARAGRAPH)
-		previous = self._ocrDoc
-		if previous is not None and previous.result is None:
-			try:
-				previous.recognizer.cancel()  # a second click before the first OCR came back
-			except Exception:
-				pass
-		# Translators: reported while the window under the mouse is being OCRed.
-		ui.message(_("Recognizing"))
-		# NVDA's object machinery only accepts keyword arguments when constructing an NVDAObject.
-		doc = _ocrDocumentClass()(recognizer=recognizer, imageInfo=imgInfo, point=(x, y), startUnit=startUnit, owner=self)
-		self._ocrDoc = doc
-		try:
-			doc.start()
-		except Exception:
-			log.exception("mouseReader: OCR failed to start")
-			ui.message(_("OCR is not available"))
-
-	def _ocrReady(self):
-		"""Called on the main thread as the OCR document takes focus and starts reading."""
-		self._sessionMode = sayAll.CURSOR.CARET
-
-
-def _windowRectAt(x: int, y: int):
-	"""The top-level window under the point, as (left, top, width, height), clipped to the
-	screen; the OCR image must not start off-screen."""
-	try:
-		hwnd = user32.WindowFromPoint(POINT(x, y))
-		if hwnd:
-			hwnd = user32.GetAncestor(hwnd, winUser.GA_ROOT) or hwnd
-	except Exception:
-		log.debugWarning("mouseReader: WindowFromPoint failed", exc_info=True)
-		hwnd = None
-	if not hwnd:
-		return None
-	r = RECT()
-	if not user32.GetWindowRect(hwnd, byref(r)):
-		return None
-	import wx
-
-	screenLeft = screenTop = 0
-	screenRight = screenBottom = 0
-	try:
-		for i in range(wx.Display.GetCount()):
-			g = wx.Display(i).GetGeometry()
-			screenLeft = min(screenLeft, g.GetLeft())
-			screenTop = min(screenTop, g.GetTop())
-			screenRight = max(screenRight, g.GetRight() + 1)
-			screenBottom = max(screenBottom, g.GetBottom() + 1)
-	except Exception:
-		screenRight, screenBottom = user32.GetSystemMetrics(0), user32.GetSystemMetrics(1)
-	# NVDA's OCR needs the image to start at or right of (0, 0): a window on a monitor to the
-	# left of or above the primary one is clipped to the part that has non-negative coordinates.
-	left = max(r.left, 0)
-	top = max(r.top, 0)
-	right = min(r.right, screenRight)
-	bottom = min(r.bottom, screenBottom)
-	if right - left < 8 or bottom - top < 8:
-		log.info("mouseReader: window under the mouse has no on-screen area to OCR (%r)" % ((r.left, r.top, r.right, r.bottom),))
-		return None
-	return left, top, right - left, bottom - top
-
-
-def _offsetNearPoint(result, x: int, y: int) -> int:
-	"""Offset in a LinesWordsResult of the word under the point, else the nearest word on the
-	line under the point, else the first word of the nearest line. For a deliberate click,
-	"nearest" is the right answer (the user wants reading to start somewhere sensible)."""
-	words = result.words
-	if not words:
-		return 0
-	# Group words into lines using the line end offsets.
-	lines = []
-	lineEnds = list(result.lines)
-	lineIndex = 0
-	current = []
-	for word in words:
-		while lineIndex < len(lineEnds) and word.offset >= lineEnds[lineIndex]:
-			lines.append(current)
-			current = []
-			lineIndex += 1
-		current.append(word)
-	lines.append(current)
-	lines = [line for line in lines if line]
-	bestLine = None
-	bestDistance = None
-	for line in lines:
-		top = min(w.top for w in line)
-		bottom = max(w.top + w.height for w in line)
-		if top <= y < bottom:
-			distance = 0
-		else:
-			distance = min(abs(y - top), abs(y - bottom))
-		if bestDistance is None or distance < bestDistance:
-			bestDistance = distance
-			bestLine = line
-	if bestLine is None:
-		return 0
-	for w in bestLine:
-		if w.left <= x < w.left + w.width:
-			return w.offset
-	nearest = min(bestLine, key=lambda w: min(abs(x - w.left), abs(x - (w.left + w.width))))
-	return nearest.offset
-
-
-_ocrDocumentClassCache = None
-
-
-def _ocrDocumentClass():
-	"""Built on first use so that importing this module never depends on contentRecog."""
-	global _ocrDocumentClassCache
-	if _ocrDocumentClassCache is not None:
-		return _ocrDocumentClassCache
-	from contentRecog import recogUi
-
-	class _OcrReadFromDocument(recogUi.RefreshableRecogResultNVDAObject):
-		"""NVDA's own OCR result document, opened at the line under the click and read from there.
-
-		The recogniser's callback (another thread) stores the result and queues the focus
-		event; the cursor is placed when that event runs on the main thread, so nothing races.
-		"""
-
-		def __init__(self, recognizer, imageInfo, point, startUnit, owner):
-			self._point = point
-			self._startUnit = startUnit
-			self._owner = owner
-			self._placeCursorOnFocus = True
-			super().__init__(recognizer=recognizer, imageInfo=imageInfo)
-
-		def event_gainFocus(self):
-			if self._placeCursorOnFocus and self.result:
-				self._placeCursorOnFocus = False
-				try:
-					offset = _offsetNearPoint(self.result, *self._point)
-					info = self.makeTextInfo(textInfos.offsets.Offsets(offset, offset))
-					if self._startUnit is not None:
-						info.expand(self._startUnit)
-						info.collapse()
-					self._selection = info
-				except Exception:
-					log.debugWarning("mouseReader: could not place the OCR cursor under the mouse", exc_info=True)
-				self._shouldSayAllOnFirstFocus = True
-				self._owner._ocrReady()
-			super().event_gainFocus()
-
-	_ocrDocumentClassCache = _OcrReadFromDocument
-	return _OcrReadFromDocument
+		if not self._ocr.start(x, y, startUnit):
+			ui.message(_("No text under the mouse"))
