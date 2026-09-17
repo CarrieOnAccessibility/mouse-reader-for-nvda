@@ -1,0 +1,781 @@
+{
+ "point": [
+  804,
+  741
+ ],
+ "lines": [
+  [
+   {
+    "x": 1289,
+    "y": 58,
+    "width": 45,
+    "height": 46,
+    "text": "Q"
+   }
+  ],
+  [
+   {
+    "x": 300,
+    "y": 347,
+    "width": 101,
+    "height": 30,
+    "text": "Home"
+   }
+  ],
+  [
+   {
+    "x": 319,
+    "y": 472,
+    "width": 60,
+    "height": 60,
+    "text": "6)"
+   }
+  ],
+  [
+   {
+    "x": 311,
+    "y": 587,
+    "width": 79,
+    "height": 30,
+    "text": "DMs"
+   }
+  ],
+  [
+   {
+    "x": 281,
+    "y": 826,
+    "width": 137,
+    "height": 36,
+    "text": "Activity"
+   }
+  ],
+  [
+   {
+    "x": 306,
+    "y": 1065,
+    "width": 90,
+    "height": 30,
+    "text": "More"
+   }
+  ],
+  [
+   {
+    "x": 535,
+    "y": 218,
+    "width": 60,
+    "height": 53,
+    "text": "O"
+   },
+   {
+    "x": 857,
+    "y": 220,
+    "width": 297,
+    "height": 49,
+    "text": "beta-users"
+   }
+  ],
+  [
+   {
+    "x": 562,
+    "y": 373,
+    "width": 48,
+    "height": 48,
+    "text": "e"
+   },
+   {
+    "x": 632,
+    "y": 380,
+    "width": 194,
+    "height": 43,
+    "text": "Messages"
+   }
+  ],
+  [
+   {
+    "x": 971,
+    "y": 380,
+    "width": 89,
+    "height": 35,
+    "text": "Files"
+   },
+   {
+    "x": 1074,
+    "y": 380,
+    "width": 32,
+    "height": 35,
+    "text": "&"
+   },
+   {
+    "x": 1119,
+    "y": 379,
+    "width": 90,
+    "height": 36,
+    "text": "links"
+   }
+  ],
+  [
+   {
+    "x": 579,
+    "y": 555,
+    "width": 57,
+    "height": 56,
+    "text": "O"
+   },
+   {
+    "x": 702,
+    "y": 540,
+    "width": 172,
+    "height": 48,
+    "text": "Lynette"
+   }
+  ],
+  [
+   {
+    "x": 902,
+    "y": 548,
+    "width": 82,
+    "height": 32,
+    "text": "4:28"
+   },
+   {
+    "x": 1000,
+    "y": 549,
+    "width": 58,
+    "height": 30,
+    "text": "PM"
+   }
+  ],
+  [
+   {
+    "x": 1367,
+    "y": 68,
+    "width": 131,
+    "height": 35,
+    "text": "Search"
+   },
+   {
+    "x": 1513,
+    "y": 68,
+    "width": 69,
+    "height": 35,
+    "text": "aira"
+   },
+   {
+    "x": 1598,
+    "y": 68,
+    "width": 162,
+    "height": 35,
+    "text": "advisors"
+   }
+  ],
+  [
+   {
+    "x": 1949,
+    "y": 515,
+    "width": 130,
+    "height": 43,
+    "text": "Friday,"
+   },
+   {
+    "x": 2089,
+    "y": 516,
+    "width": 145,
+    "height": 43,
+    "text": "August"
+   },
+   {
+    "x": 2246,
+    "y": 516,
+    "width": 89,
+    "height": 35,
+    "text": "21st"
+   },
+   {
+    "x": 2362,
+    "y": 526,
+    "width": 20,
+    "height": 13,
+    "text": "v"
+   }
+  ],
+  [
+   {
+    "x": 3778,
+    "y": 69,
+    "width": 28,
+    "height": 28,
+    "text": "x"
+   }
+  ],
+  [
+   {
+    "x": 3166,
+    "y": 227,
+    "width": 49,
+    "height": 35,
+    "text": "62"
+   },
+   {
+    "x": 3285,
+    "y": 212,
+    "width": 60,
+    "height": 62,
+    "text": "a"
+   },
+   {
+    "x": 3383,
+    "y": 234,
+    "width": 32,
+    "height": 19,
+    "text": "v"
+   }
+  ],
+  [
+   {
+    "x": 708,
+    "y": 617,
+    "width": 222,
+    "height": 47,
+    "text": "@channel"
+   },
+   {
+    "x": 952,
+    "y": 617,
+    "width": 90,
+    "height": 40,
+    "text": "Aira"
+   },
+   {
+    "x": 1063,
+    "y": 617,
+    "width": 190,
+    "height": 48,
+    "text": "Explorer"
+   },
+   {
+    "x": 1263,
+    "y": 617,
+    "width": 171,
+    "height": 40,
+    "text": "Version"
+   },
+   {
+    "x": 1450,
+    "y": 617,
+    "width": 175,
+    "height": 40,
+    "text": "4.14.13"
+   },
+   {
+    "x": 1642,
+    "y": 617,
+    "width": 66,
+    "height": 40,
+    "text": "for"
+   },
+   {
+    "x": 1723,
+    "y": 617,
+    "width": 79,
+    "height": 40,
+    "text": "iOS"
+   },
+   {
+    "x": 1818,
+    "y": 617,
+    "width": 81,
+    "height": 40,
+    "text": "and"
+   },
+   {
+    "x": 1914,
+    "y": 617,
+    "width": 195,
+    "height": 40,
+    "text": "Android."
+   }
+  ],
+  [
+   {
+    "x": 699,
+    "y": 721,
+    "width": 160,
+    "height": 42,
+    "text": "What's"
+   },
+   {
+    "x": 877,
+    "y": 734,
+    "width": 106,
+    "height": 29,
+    "text": "new:"
+   }
+  ],
+  [
+   {
+    "x": 802,
+    "y": 801,
+    "width": 171,
+    "height": 39,
+    "text": "Restore"
+   },
+   {
+    "x": 989,
+    "y": 800,
+    "width": 201,
+    "height": 40,
+    "text": "one-flick"
+   },
+   {
+    "x": 1204,
+    "y": 800,
+    "width": 191,
+    "height": 40,
+    "text": "five-star"
+   },
+   {
+    "x": 1410,
+    "y": 800,
+    "width": 131,
+    "height": 49,
+    "text": "rating"
+   }
+  ],
+  [
+   {
+    "x": 799,
+    "y": 877,
+    "width": 122,
+    "height": 40,
+    "text": "Offer"
+   },
+   {
+    "x": 935,
+    "y": 877,
+    "width": 147,
+    "height": 40,
+    "text": "details"
+   },
+   {
+    "x": 1100,
+    "y": 888,
+    "width": 55,
+    "height": 29,
+    "text": "no"
+   },
+   {
+    "x": 1173,
+    "y": 877,
+    "width": 143,
+    "height": 49,
+    "text": "longer"
+   },
+   {
+    "x": 1331,
+    "y": 877,
+    "width": 109,
+    "height": 40,
+    "text": "need"
+   },
+   {
+    "x": 1457,
+    "y": 888,
+    "width": 22,
+    "height": 29,
+    "text": "a"
+   },
+   {
+    "x": 1499,
+    "y": 877,
+    "width": 179,
+    "height": 40,
+    "text": "location"
+   },
+   {
+    "x": 1695,
+    "y": 880,
+    "width": 47,
+    "height": 37,
+    "text": "to"
+   },
+   {
+    "x": 1760,
+    "y": 877,
+    "width": 92,
+    "height": 40,
+    "text": "load"
+   }
+  ],
+  [
+   {
+    "x": 799,
+    "y": 953,
+    "width": 199,
+    "height": 49,
+    "text": "(android)"
+   },
+   {
+    "x": 1018,
+    "y": 955,
+    "width": 64,
+    "height": 39,
+    "text": "Fix"
+   },
+   {
+    "x": 1097,
+    "y": 955,
+    "width": 118,
+    "height": 40,
+    "text": "crash"
+   },
+   {
+    "x": 1231,
+    "y": 955,
+    "width": 125,
+    "height": 40,
+    "text": "when"
+   },
+   {
+    "x": 1376,
+    "y": 956,
+    "width": 114,
+    "height": 39,
+    "text": "Meta"
+   },
+   {
+    "x": 1508,
+    "y": 955,
+    "width": 159,
+    "height": 49,
+    "text": "glasses"
+   },
+   {
+    "x": 1684,
+    "y": 966,
+    "width": 69,
+    "height": 29,
+    "text": "are"
+   },
+   {
+    "x": 1769,
+    "y": 955,
+    "width": 143,
+    "height": 40,
+    "text": "folded"
+   },
+   {
+    "x": 1930,
+    "y": 955,
+    "width": 145,
+    "height": 49,
+    "text": "during"
+   },
+   {
+    "x": 2091,
+    "y": 966,
+    "width": 22,
+    "height": 29,
+    "text": "a"
+   },
+   {
+    "x": 2131,
+    "y": 955,
+    "width": 71,
+    "height": 40,
+    "text": "call"
+   }
+  ],
+  [
+   {
+    "x": 799,
+    "y": 1030,
+    "width": 108,
+    "height": 49,
+    "text": "(iOS)"
+   },
+   {
+    "x": 926,
+    "y": 1033,
+    "width": 183,
+    "height": 39,
+    "text": "Recover"
+   },
+   {
+    "x": 1122,
+    "y": 1032,
+    "width": 125,
+    "height": 40,
+    "text": "audio"
+   },
+   {
+    "x": 1261,
+    "y": 1032,
+    "width": 126,
+    "height": 40,
+    "text": "when"
+   },
+   {
+    "x": 1407,
+    "y": 1033,
+    "width": 114,
+    "height": 39,
+    "text": "Meta"
+   },
+   {
+    "x": 1538,
+    "y": 1032,
+    "width": 160,
+    "height": 49,
+    "text": "glasses"
+   },
+   {
+    "x": 1712,
+    "y": 1032,
+    "width": 125,
+    "height": 40,
+    "text": "video"
+   },
+   {
+    "x": 1854,
+    "y": 1035,
+    "width": 153,
+    "height": 37,
+    "text": "stream"
+   },
+   {
+    "x": 2025,
+    "y": 1035,
+    "width": 126,
+    "height": 37,
+    "text": "starts"
+   }
+  ],
+  [
+   {
+    "x": 799,
+    "y": 1108,
+    "width": 108,
+    "height": 49,
+    "text": "(iOS)"
+   },
+   {
+    "x": 926,
+    "y": 1110,
+    "width": 65,
+    "height": 39,
+    "text": "Fix"
+   },
+   {
+    "x": 1006,
+    "y": 1110,
+    "width": 146,
+    "height": 40,
+    "text": "switch"
+   },
+   {
+    "x": 1170,
+    "y": 1110,
+    "width": 177,
+    "height": 48,
+    "text": "speaker"
+   },
+   {
+    "x": 1362,
+    "y": 1113,
+    "width": 75,
+    "height": 37,
+    "text": "not"
+   },
+   {
+    "x": 1450,
+    "y": 1110,
+    "width": 185,
+    "height": 49,
+    "text": "working"
+   },
+   {
+    "x": 1649,
+    "y": 1110,
+    "width": 125,
+    "height": 40,
+    "text": "when"
+   },
+   {
+    "x": 1791,
+    "y": 1110,
+    "width": 160,
+    "height": 49,
+    "text": "glasses"
+   },
+   {
+    "x": 1967,
+    "y": 1121,
+    "width": 70,
+    "height": 29,
+    "text": "are"
+   },
+   {
+    "x": 2054,
+    "y": 1110,
+    "width": 124,
+    "height": 49,
+    "text": "being"
+   },
+   {
+    "x": 2195,
+    "y": 1110,
+    "width": 103,
+    "height": 40,
+    "text": "used"
+   }
+  ],
+  [
+   {
+    "x": 1933,
+    "y": 1373,
+    "width": 155,
+    "height": 43,
+    "text": "Sunday,"
+   },
+   {
+    "x": 2098,
+    "y": 1374,
+    "width": 145,
+    "height": 42,
+    "text": "August"
+   },
+   {
+    "x": 2255,
+    "y": 1373,
+    "width": 93,
+    "height": 36,
+    "text": "23rd"
+   },
+   {
+    "x": 2377,
+    "y": 1384,
+    "width": 20,
+    "height": 13,
+    "text": "v"
+   }
+  ],
+  [
+   {
+    "x": 579,
+    "y": 1515,
+    "width": 57,
+    "height": 38,
+    "text": "•"
+   },
+   {
+    "x": 699,
+    "y": 1499,
+    "width": 144,
+    "height": 41,
+    "text": "Shane"
+   },
+   {
+    "x": 859,
+    "y": 1499,
+    "width": 295,
+    "height": 49,
+    "text": "Popplestone"
+   }
+  ],
+  [
+   {
+    "x": 594,
+    "y": 1738,
+    "width": 197,
+    "height": 48,
+    "text": "Message"
+   },
+   {
+    "x": 815,
+    "y": 1740,
+    "width": 30,
+    "height": 35,
+    "text": "a"
+   },
+   {
+    "x": 858,
+    "y": 1737,
+    "width": 239,
+    "height": 40,
+    "text": "beta-users"
+   }
+  ],
+  [
+   {
+    "x": 1184,
+    "y": 1508,
+    "width": 79,
+    "height": 32,
+    "text": "5:09"
+   },
+   {
+    "x": 1280,
+    "y": 1509,
+    "width": 57,
+    "height": 30,
+    "text": "PM"
+   }
+  ]
+ ],
+ "units": {
+  "line": [
+   "Home",
+   "6)",
+   "DMs",
+   "Activity",
+   "More",
+   "Q Search aira advisors",
+   "O beta-users",
+   "e Messages",
+   "Files & links",
+   "Friday, August 21st v",
+   "O Lynette 4:28 PM",
+   "@channel Aira Explorer Version 4.14.13 for iOS and Android.",
+   "What's new:",
+   "Restore one-flick five-star rating",
+   "Offer details no longer need a location to load",
+   "(android) Fix crash when Meta glasses are folded during a call",
+   "(iOS) Recover audio when Meta glasses video stream starts",
+   "(iOS) Fix switch speaker not working when glasses are being used",
+   "Sunday, August 23rd v",
+   "• Shane Popplestone 5:09 PM",
+   "Message a beta-users",
+   "62 a v",
+   "x"
+  ],
+  "paragraph": [
+   "Home",
+   "6) DMs",
+   "Activity",
+   "More",
+   "Q Search aira advisors",
+   "O beta-users e Messages Files & links",
+   "Friday, August 21st v",
+   "O Lynette 4:28 PM @channel Aira Explorer Version 4.14.13 for iOS and Android. What's new: Restore one-flick five-star rating Offer details no longer need a location to load (android) Fix crash when Meta glasses are folded during a call (iOS) Recover audio when Meta glasses video stream starts (iOS) Fix switch speaker not working when glasses are being used",
+   "Sunday, August 23rd v",
+   "• Shane Popplestone 5:09 PM",
+   "Message a beta-users",
+   "62 a v",
+   "x"
+  ],
+  "block": [
+   "Home 6) DMs",
+   "Activity",
+   "More",
+   "Q Search aira advisors",
+   "O beta-users e Messages Files & links",
+   "Friday, August 21st v",
+   "O Lynette 4:28 PM @channel Aira Explorer Version 4.14.13 for iOS and Android. What's new: Restore one-flick five-star rating Offer details no longer need a location to load (android) Fix crash when Meta glasses are folded during a call (iOS) Recover audio when Meta glasses video stream starts (iOS) Fix switch speaker not working when glasses are being used",
+   "Sunday, August 23rd v",
+   "• Shane Popplestone 5:09 PM",
+   "Message a beta-users",
+   "62 a v",
+   "x"
+  ]
+ }
+}

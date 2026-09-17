@@ -14,6 +14,7 @@ copy) with the NVDA imports stubbed, and runs two synthetic layouts:
 Prints the paragraphs each rule set produces.
 """
 import io
+import os
 import re
 import subprocess
 import sys
@@ -29,7 +30,8 @@ def loadEngine(source):
     end = source.index("# Speech calls slower than this are logged")
     head_start = source.index("LEVEL_LINE =")
     head_end = source.index("_PrintWindow =")
-    ns = {"re": re}
+    import tempfile
+    ns = {"re": re, "os": os, "tempfile": tempfile}
     exec(source[head_start:head_end], ns)
     exec(source[start:end], ns)
     return ns
@@ -149,6 +151,16 @@ def show(title, ns, data):
         print("   -", u.text[:90] + ("..." if len(u.text) > 90 else ""))
 
 
+def captures():
+    """Real OCR results saved by the add-on (dev/captures/*.json): lines of words with boxes."""
+    import glob, json
+    out = []
+    for path in sorted(glob.glob(os.path.join(os.path.dirname(os.path.abspath(__file__)), "captures", "*.json"))):
+        with io.open(path, encoding="utf-8") as f:
+            out.append((os.path.basename(path), json.load(f)["lines"]))
+    return out
+
+
 baseline = sys.argv[1] if len(sys.argv) > 1 else "main"
 committed = subprocess.run(["git", "-C", REPO, "show", baseline + ":addon/globalPlugins/mouseReader/ocr.py"], capture_output=True, text=True, encoding="utf-8").stdout
 working = io.open(OCR, encoding="utf-8").read()
@@ -159,3 +171,5 @@ for name, src in ((baseline.upper(), committed), ("WORKING COPY", working)):
     show("chat", ns, chat())
     show("slack bullets", ns, slackBullets())
     show("book", ns, book())
+    for name, data in captures():
+        show("capture " + name, ns, data)

@@ -365,7 +365,7 @@ def _normalBullet(text: str) -> str:
 	rest = words[1] if len(words) > 1 else ""
 	if "" <= first[0] <= "":
 		return ("• " + (first[1:] + " " if first[1:] else "") + rest).strip()
-	if first in ("o", "O") and rest:
+	if first == "o" and rest:
 		return "• " + rest
 	return text
 
@@ -383,7 +383,7 @@ def _startsItem(line: str) -> bool:
 		return True
 	if len(first) > 1 and first[0] in ocr._BULLETS and first[1:2].isalnum():
 		return True  # the bullet glued onto the first word
-	return first in ("o", "O") and len(words) > 1
+	return first == "o" and len(words) > 1  # only the lowercase o: a capital O is a word or an icon
 
 
 def _isText(obj) -> bool:

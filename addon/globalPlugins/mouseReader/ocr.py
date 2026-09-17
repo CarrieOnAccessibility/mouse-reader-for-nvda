@@ -263,7 +263,9 @@ def startsItem(words) -> bool:
 	if len(first) > 1 and first[0] in _BULLETS and first[1:2].isalnum():
 		return True  # the bullet glued onto the first word: "•Restore"
 	# What OCR makes of a hollow or small bullet, when the line goes on: "o Bring questions".
-	return first in ("o", "O", "0") and len(words) > 1
+	# Only the lowercase o: a capital O or a 0 is what OCR makes of an avatar or an icon in
+	# front of a name, and an item that starts there swallows the whole message under it.
+	return first == "o" and len(words) > 1
 
 
 def _startsSentence(words) -> bool:
@@ -420,15 +422,20 @@ def groupUnits(data, level):
 			if startsItem(line["words"]):
 				best = None  # a new list item, whatever came before
 			elif best["isItem"]:
-				# Inside a numbered or bulleted item. Two layouts:
+				# Inside a numbered or bulleted item. Three layouts:
 				# - hanging indent: continuation lines sit at the item's text edge, right of the
 				#   marker. Unambiguous, so they join whatever they start with;
 				# - flush: continuation lines start at the marker's own edge, where a following
 				#   paragraph would start too, so the ordinary rules decide (a short last line, or
-				#   a sentence end followed by a sentence start, ends the item).
+				#   a sentence end followed by a sentence start, ends the item);
+				# - further right than the text edge: a nested list or another block, not this
+				#   item (an OCR'd avatar in front of a name once made an "item" that swallowed
+				#   the whole message under it this way).
 				# A line further left than the marker has left the list altogether.
-				if line["left"] >= best["contentLeft"] - typical * 0.6:
+				if abs(line["left"] - best["contentLeft"]) <= typical * 0.6:
 					pass  # hanging continuation
+				elif line["left"] > best["contentLeft"] + typical * 0.6:
+					best = None
 				elif line["left"] < best["itemLeft"] - typical * 0.6:
 					best = None
 				else:
