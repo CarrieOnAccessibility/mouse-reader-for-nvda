@@ -97,9 +97,6 @@ class MouseReaderSettingsPanel(SettingsPanel):
 			wx.CheckBox(self, label=_("&Enable Mouse Reader"))
 		)
 		self.enabledCheckBox.SetValue(bool(section["enabled"]))
-		# Translators: label of the button that opens a short explanation of the add-on.
-		howToButton = sHelper.addItem(wx.Button(self, label=_("&How to use...")))
-		howToButton.Bind(wx.EVT_BUTTON, self._onHowTo)
 		self.levelChoice = sHelper.addLabeledControl(
 			# Translators: label of the dropdown that picks how much text a hover reads.
 			_("&Hover reads:"),
@@ -109,6 +106,9 @@ class MouseReaderSettingsPanel(SettingsPanel):
 		keys = [key for key, _label in LEVEL_CHOICES]
 		current = section["hoverLevel"]
 		self.levelChoice.SetSelection(keys.index(current) if current in keys else 1)
+		# Translators: label of the button that opens a short explanation of the add-on.
+		howToButton = sHelper.addItem(wx.Button(self, label=_("&How to use...")))
+		howToButton.Bind(wx.EVT_BUTTON, self._onHowTo)
 
 	def _onHowTo(self, evt):
 		# Translators: title of the "How to use" dialog.
