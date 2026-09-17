@@ -92,20 +92,23 @@ class HowToUseDialog(wx.Dialog):
 		super().__init__(parent, title=_("How to use Mouse Reader"))
 		mainSizer = wx.BoxSizer(wx.VERTICAL)
 		sHelper = guiHelper.BoxSizerHelper(self, orientation=wx.VERTICAL)
-		self.text = sHelper.addLabeledControl(
-			# Translators: label of the read-only text box in the "How to use" window.
-			_("How to use:"),
-			wx.TextCtrl,
-			style=wx.TE_MULTILINE | wx.TE_READONLY,
-			size=(560, 220),
-		)
+		# Translators: label of the read-only text box in the "How to use" window.
+		label = wx.StaticText(self, label=_("How to use:"))
+		sHelper.addItem(label)
+		self.text = wx.TextCtrl(self, style=wx.TE_MULTILINE | wx.TE_READONLY, size=(1100, 440))
 		self.text.SetValue(HOW_TO_USE)
+		sHelper.addItem(self.text, flag=wx.EXPAND, proportion=1)
+		# Tie the label to the box for screen readers, since they are on separate lines.
+		try:
+			self.text.SetName(label.GetLabel().rstrip(":"))
+		except Exception:
+			pass
 		sHelper.addDialogDismissButtons(self.CreateButtonSizer(wx.CLOSE), separated=True)
 		self.Bind(wx.EVT_BUTTON, lambda evt: self.EndModal(wx.ID_CLOSE), id=wx.ID_CLOSE)
 		self.SetEscapeId(wx.ID_CLOSE)
-		mainSizer.Add(sHelper.sizer, border=guiHelper.BORDER_FOR_DIALOGS, flag=wx.ALL)
-		mainSizer.Fit(self)
+		mainSizer.Add(sHelper.sizer, border=guiHelper.BORDER_FOR_DIALOGS, flag=wx.ALL | wx.EXPAND, proportion=1)
 		self.SetSizer(mainSizer)
+		mainSizer.Fit(self)
 		self.CentreOnScreen()
 		self.text.SetFocus()
 		self.text.SetInsertionPoint(0)
