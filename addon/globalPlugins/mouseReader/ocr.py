@@ -77,9 +77,40 @@ WHEEL_RERECOGNIZE_MS = 500
 # before OCR takes over.
 DOCUMENT_POLL_MS = 150
 DOCUMENT_WAIT_MS = 4000
-# The short beep that marks a window being recognised with OCR (when the setting is on).
-OCR_BEEP_HZ = 660
-OCR_BEEP_MS = 60
+# The soft two-note chirp that marks a window being recognised with OCR (when the setting is
+# on): (pitch in Hz, length in ms) per note, and the volume out of 100 (NVDA's own beeps are 50).
+OCR_CHIRP = ((523, 40), (784, 60))
+OCR_CHIRP_VOLUME = 35
+
+
+def ocrChirp():
+	"""Play the OCR chirp through NVDA's tone player: the notes are generated the way
+	tones.beep generates its one note, and fed one after the other. A plain soft beep if the
+	player cannot be reached this way."""
+	try:
+		if not tones.decide_beep.decide(hz=OCR_CHIRP[0][0], length=OCR_CHIRP[0][1], left=OCR_CHIRP_VOLUME, right=OCR_CHIRP_VOLUME, isSpeechBeepCommand=False):
+			return
+	except Exception:
+		pass
+	try:
+		import NVDAHelper
+
+		player = tones.player
+		buffers = []
+		for hz, ms in OCR_CHIRP:
+			size = NVDAHelper.localLib.generateBeep(None, hz, ms, OCR_CHIRP_VOLUME, OCR_CHIRP_VOLUME)
+			buf = ctypes.create_string_buffer(size)
+			NVDAHelper.localLib.generateBeep(buf, hz, ms, OCR_CHIRP_VOLUME, OCR_CHIRP_VOLUME)
+			buffers.append(buf.raw)
+		player.stop()
+		for raw in buffers:
+			player.feed(raw)
+	except Exception:
+		log.debugWarning("mouseReader: chirp failed; plain beep instead", exc_info=True)
+		try:
+			tones.beep(OCR_CHIRP[0][0], 70, OCR_CHIRP_VOLUME, OCR_CHIRP_VOLUME)
+		except Exception:
+			pass
 # Consecutive lines whose tops are further apart than this many typical line pitches start a
 # new paragraph (1 = normal spacing; a blank line between messages is about 2).
 PARAGRAPH_BREAK_FACTOR = 1.55
@@ -622,11 +653,8 @@ class OcrReader:
 		captureMs = int((time.time() - started) * 1000)
 		left, top, width, height = rect
 		imgInfo = _WindowImageInfo(left, top, width, height)
-		try:
-			if self._beep():
-				tones.beep(OCR_BEEP_HZ, OCR_BEEP_MS)  # OCR, as opposed to a document read: audible even when speech is cut short
-		except Exception:
-			pass
+		if self._beep():
+			ocrChirp()  # OCR, as opposed to a document read: audible even when speech is cut short
 		if not quiet:
 			# Translators: reported while the window under the mouse is being recognised.
 			ui.message(_("Recognizing"))

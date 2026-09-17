@@ -503,6 +503,8 @@ class DocumentSnapshot(ocr.WindowSnapshot):
 		self._recent = []  # [(rectangle, level, unit)] resolved lately, until the document scrolls
 		self._via = ""  # how the last lookup found its answer, for the log
 		self.unstructured = False  # set when the text under the pointer proved to have no paragraphs
+		self._paragraphLogs = 0
+		self._walkDepth = 0  # how many levels the last walk down got before it stopped
 
 	@property
 	def kind(self) -> str:
@@ -668,6 +670,16 @@ class DocumentSnapshot(ocr.WindowSnapshot):
 			whole = info.copy()
 			bookmark = whole.bookmark
 			split = self._splitItems(whole)
+			if self._paragraphLogs < 6:
+				self._paragraphLogs += 1
+				try:
+					raw = whole.text or ""
+				except Exception:
+					raw = ""
+				log.info(
+					"mouseReader: paragraph element %s: %d characters, %d line breaks, %s; text starts %r"
+					% (describe(node), len(raw), raw.count("\n") + raw.count("\r"), ("split into %d items" % len(split[0])) if split else "one unit", raw[:160])
+				)
 			if split is not None:
 				parts, lineCount = split
 				units = []
@@ -856,6 +868,7 @@ class DocumentSnapshot(ocr.WindowSnapshot):
 		obj itself, with no rectangle, if nothing under the point."""
 		current = obj
 		currentLoc = None
+		self._walkDepth = 0
 		for _ in range(MAX_DESCENT):
 			if _isText(current) and not _isContainer(current):
 				break
@@ -882,6 +895,7 @@ class DocumentSnapshot(ocr.WindowSnapshot):
 			if trail is not None:
 				trail.append("%s %s" % (describe(hit), _rectText(hitLoc)))
 			current, currentLoc = hit, hitLoc
+			self._walkDepth += 1
 		return current, currentLoc
 
 	def _walkFrom(self, top, x, y, level):
@@ -927,6 +941,9 @@ class DocumentSnapshot(ocr.WindowSnapshot):
 		unit, deep = self._walkFrom(obj, x, y, level)
 		if unit is not None:
 			return unit, deep
+		if self._walkDepth >= 2:
+			self._via = "blank inside the page"
+			return None, deep if deep is not None else obj  # the walk was inside the page: nothing there
 		self._via = "second ask"
 		again = objectAt(x, y)
 		if again is None or again is obj:
