@@ -207,7 +207,9 @@ def explainUIA(hwnd):
 
 
 def isUIAWindowAt(x: int, y: int, topHwnd) -> bool:
-	"""Does NVDA read the window under the point through UI Automation?"""
+	"""Does NVDA read the window under the point through UI Automation? Only the window right
+	under the pointer counts: a browser's outer frame (Chrome_WidgetWin_1) is always UIA to NVDA
+	while the web content in its child window is on the normal in-process route."""
 	try:
 		import UIAHandler
 		from ctypes.wintypes import POINT
@@ -217,11 +219,10 @@ def isUIAWindowAt(x: int, y: int, topHwnd) -> bool:
 		handler = UIAHandler.handler
 		if handler is None:
 			return False
-		child = user32.WindowFromPoint(POINT(x, y))
-		for hwnd in (child, topHwnd):
-			if hwnd and handler.isUIAWindow(hwnd):
-				explainUIA(hwnd)
-				return True
+		hwnd = user32.WindowFromPoint(POINT(x, y)) or topHwnd
+		if hwnd and handler.isUIAWindow(hwnd):
+			explainUIA(hwnd)
+			return True
 		return False
 	except Exception:
 		log.debugWarning("mouseReader: could not tell whether the window uses UIA", exc_info=True)
