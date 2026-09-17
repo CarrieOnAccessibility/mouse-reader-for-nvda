@@ -55,6 +55,9 @@ config.conf.spec[CONF_SECTION] = {
 	"hoverLevel": "option(%s, default='%s')" % (", ".join("'%s'" % key for key, _label in LEVEL_CHOICES), ocr.LEVEL_PARAGRAPH),
 	"beepOnOcr": "boolean(default=False)",
 	"source": "option(%s, default='%s')" % (", ".join("'%s'" % key for key, _label in SOURCE_CHOICES), ocr.SOURCE_AUTO),
+	# Not in the Settings panel: writes each OCR result to %TEMP%\mouseReader-last-ocr.json for
+	# replaying with dev/layout_test.py.
+	"debugDump": "boolean(default=False)",
 }
 
 
@@ -78,23 +81,29 @@ class Settings:
 
 # Translators: the text of the "How to use" window.
 HOW_TO_USE = _(
-	"Mouse Reader uses OCR to read text that NVDA's mouse tracking, also known as mouse echo, "
-	"cannot read.\n"
+	"Mouse Reader reads the text under the mouse where NVDA's mouse tracking, also known as mouse "
+	"echo, cannot.\n"
 	"\n"
-	"Hold Control+NVDA and click where you want NVDA to read. Mouse Reader takes a screenshot of "
-	"the window and reads the paragraph you clicked. If mouse tracking is on, you can then move "
-	"the mouse over other text to hear it. You can also place the mouse where you want reading to "
-	"start and press Control+NVDA+Enter.\n"
+	"Hold Control+NVDA and click where you want NVDA to read, or place the mouse there and press "
+	"Control+NVDA+Enter. Mouse Reader reads the paragraph you clicked. If mouse tracking is on, you "
+	"can then move the mouse over other text to hear it, a paragraph at a time.\n"
 	"\n"
-	"In a window that scrolls, roll the mouse wheel and Mouse Reader recognizes the screen again. "
-	"Clicking or pressing a key ends the recognition.\n"
+	"Where the text comes from: on a web page, or a PDF open in Chrome or Edge, Mouse Reader reads "
+	"the page's own text, so the words are exact whatever the font looks like, and the browse "
+	"cursor moves to the paragraph you clicked. Everywhere else, and on pages whose text has no "
+	"paragraphs, it takes a screenshot of the window and uses OCR. The setting \"Read text from\" "
+	"can force OCR only, and \"Play a beep when OCR is used\" tells the two apart.\n"
+	"\n"
+	"In an OCR window that scrolls, roll the mouse wheel and Mouse Reader recognizes the screen "
+	"again. Clicking or pressing a key ends the recognition.\n"
 	"\n"
 	"Hold Shift+NVDA and click, or press Shift+NVDA+Enter, to start continuous reading from that "
 	"point. Continuous reading ignores mouse movement, even with mouse tracking on, and stops when "
 	"you click or press a key.\n"
 	"\n"
 	"Please note that OCR reads a picture of the screen, so it can misread words, miss small or "
-	"faint text, and does not know about links, headings or other structure."
+	"faint text, and does not know about links, headings or other structure. If a browser page "
+	"unexpectedly uses OCR and NVDA feels slow in it, exit the browser completely and open it again."
 )
 
 

@@ -42,6 +42,7 @@ from ctypes.wintypes import POINT, RECT
 
 import addonHandler
 import api
+import config
 import queueHandler
 import speech
 import textInfos.offsets
@@ -86,6 +87,11 @@ OCR_DUMP_PATH = os.path.join(tempfile.gettempdir(), "mouseReader-last-ocr.json")
 
 
 def dumpOcr(data, x, y, snapshot):
+	try:
+		if not config.conf["mouseReader"]["debugDump"]:
+			return
+	except Exception:
+		return
 	try:
 		dump = {"point": [x, y], "lines": data}
 		if snapshot is not None:

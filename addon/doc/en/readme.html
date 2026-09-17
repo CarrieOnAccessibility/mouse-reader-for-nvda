@@ -6,29 +6,43 @@
 </head>
 <body>
 <h1>Mouse Reader</h1>
-<p>For the apps where NVDA's mouse tracking goes silent because the app cannot say what is at a point on the screen: Slack and other Electron apps, pictures of text, and the like.</p>
-<p>Hold <strong>NVDA+control</strong> and click anywhere in the window (or press <strong>NVDA+control+enter</strong> with the pointer over it). The window is recognised with Windows' built-in OCR (the same engine as NVDA+R) and the paragraph under the pointer is read. From then on, for three minutes, hovering over that window reads the recognised paragraph under the pointer, once per paragraph; scrolling the mouse wheel over it recognises it again half a second after the wheel stops, and reads the paragraph now under the pointer. Another NVDA+control+click recognises afresh at any time. The click is swallowed, so the app underneath does not see it.</p>
-<p>The window is asked to draw itself for the picture rather than the screen being photographed, so this works with Windows Magnifier in full-screen mode and covers the whole window, not only the part on screen. Recognised paragraphs are formed from the spacing between lines, column by column, so a sidebar and a message list stay apart. Inside a recognised window NVDA's own mouse tracking stays out of the way, so hovering behaves the same everywhere in it; everywhere else NVDA is untouched.</p>
-<p>OCR gives plain text without links or headings, and takes a fraction of a second for a small window and up to a second or so for a large one.</p>
-<p><strong>Reading on.</strong> Hold <strong>NVDA+shift</strong> and click (or press <strong>NVDA+shift+enter</strong> over the window) and NVDA reads from the paragraph under the pointer to the end of the window, recognising the window first if it has not been recognised. The mouse is ignored while it reads, and scrolling does not stop it. As with NVDA's own Say All, any key stops it (control stops, shift pauses and resumes); a click or moving to another window stops it too.</p>
+<p>For the places where NVDA's mouse tracking goes silent or stumbles: apps that cannot say what is at a point on the screen (Slack and other Electron apps, pictures of text), and PDFs whose font makes a mess of OCR.</p>
+<p>Hold <strong>NVDA+control</strong> and click anywhere in the window (or press <strong>NVDA+control+enter</strong> with the pointer over it). The paragraph under the pointer is read. From then on, for three minutes, hovering over that window reads the paragraph under the pointer, once per paragraph. Another NVDA+control+click starts afresh at any time. The click is swallowed, so the app underneath does not see it.</p>
+<h2>Where the text comes from</h2>
+<p><strong>The page's own text.</strong> On a web page, or a PDF open in Chrome or Edge, Mouse Reader reads NVDA's own copy of the page, so the words are exact whatever the font looks like, a bulleted list reads item by item, and the browse cursor moves to the paragraph you clicked, so the keyboard carries on from there. Scrolling needs nothing: hovering asks the live page. Reading on (below) uses NVDA's Say All through the page, and the page scrolls along when it has focus. The page's toolbar and its controls are left to NVDA to read the usual way.</p>
+<p><strong>OCR.</strong> Everywhere else, and on pages whose text has no paragraphs (a viewer that draws a PDF as loose snippets, say), the window is asked to draw itself into a picture (so this works with Windows Magnifier in full-screen mode and covers the whole window) and Windows' built-in OCR reads it, the same engine as NVDA+R. Paragraphs are formed from the spacing between lines, column by column, so a sidebar and a message list stay apart; bullet dots, which OCR itself leaves out, are found in the picture so that list items stay apart too. Scrolling the mouse wheel over an OCR window recognises it again half a second after the wheel stops. OCR gives plain text without links or headings, can misread words or miss small or faint text, and takes a fraction of a second for a small window and up to a second or so for a large one.</p>
+<p>Inside a window Mouse Reader is reading, NVDA's own mouse tracking stays out of the way, so hovering behaves the same everywhere in it; everywhere else NVDA is untouched.</p>
+<p><strong>Reading on.</strong> Hold <strong>NVDA+shift</strong> and click (or press <strong>NVDA+shift+enter</strong> over the window) and NVDA reads from the paragraph under the pointer onwards. The mouse is ignored while it reads, and scrolling does not stop it. As with NVDA's own Say All, any key stops it (control stops, shift pauses and resumes); a click or moving to another window stops it too.</p>
 <h2>Settings</h2>
 <p>The <strong>Mouse Reader</strong> category in <strong>NVDA menu &gt; Preferences &gt; Settings</strong>:</p>
 <ul>
-<li><strong>Enable Mouse Reader</strong>: everything on or off. A <strong>How to use</strong> button at the bottom opens a small window with the shortcuts in a read-only text box.</li>
-<li><strong>Hover reads</strong>: <strong>Line</strong> (every recognised line on its own), <strong>Paragraph</strong> (the default: lines grouped by spacing, with a new paragraph at a list item, an indent change, a line that ends a sentence, or a short line followed by a line that starts one) or <strong>Block</strong> (a whole message or section, grouped by spacing only).</li>
+<li><strong>Enable Mouse Reader</strong>: everything on or off.</li>
+<li><strong>Hover reads</strong>: <strong>Line</strong> (a line at a time), <strong>Paragraph</strong> (the default) or <strong>Block</strong> (a whole message or section). In an OCR window a paragraph is lines grouped by spacing, with a new paragraph at a list item, an indent change, a line that ends a sentence, or a short line followed by a line that starts one; on a page it is the page's own paragraph.</li>
+<li><strong>Read text from</strong>: <strong>Automatic</strong> (the page's own text when it has paragraphs, otherwise OCR) or <strong>OCR only</strong>.</li>
+<li><strong>Play a beep when OCR is used</strong>: a short soft beep at every OCR recognition, click or wheel, so OCR can be told from the page's own text even when speech is too quick to say "Recognizing". Off by default.</li>
+<li><strong>How to use</strong>: a small window with the shortcuts in a read-only text box.</li>
 </ul>
-<p>A snapshot is dropped when you click (any button) or press a key, since the window has probably changed; recognise again with NVDA+control+click.</p>
+<p>A recognition is dropped when you click (any button) or press a key, since the window has probably changed; start again with NVDA+control+click.</p>
 <h2>Commands</h2>
 <ul>
-<li><strong>NVDA+control+click</strong>: recognise the window under the mouse and read the paragraph under the pointer.</li>
+<li><strong>NVDA+control+click</strong>: read the paragraph under the mouse and start hovering in that window.</li>
 <li><strong>NVDA+control+enter</strong>: the same, without clicking.</li>
-<li><strong>NVDA+shift+click</strong>: read on from the paragraph under the mouse to the end of the window.</li>
+<li><strong>NVDA+shift+click</strong>: read on from the paragraph under the mouse.</li>
 <li><strong>NVDA+shift+enter</strong>: the same, without clicking.</li>
 <li>A command with no key by default cycles what a hover reads: line, paragraph or block.</li>
+<li>A command with no key by default switches where the text comes from: automatic or OCR only.</li>
 </ul>
 <p>The keyboard commands can be changed in NVDA's Input Gestures dialog, under the <strong>Mouse Reader</strong> category.</p>
+<h2>Good to know</h2>
+<ul>
+<li>If a browser page unexpectedly uses OCR (the beep sounds, if it is on) and NVDA feels slow in that browser, NVDA has fallen back to reading the browser through UI Automation. Exiting the browser completely and opening it again, with NVDA running, puts it back on the normal route.</li>
+<li>Right after NVDA starts, the first click on a page may say "Loading" for a moment while NVDA builds its copy of the page.</li>
+<li>A page's text needs NVDA 2026.1 or later, as does the add-on.</li>
+</ul>
 <h2>A delay for mouse tracking</h2>
-<p>Making NVDA's mouse tracking wait until the mouse has stopped is a separate add-on, <strong>Mouse Echo Delay</strong>, from the same author. The two work together: with both installed, hovering in a recognised window reads a paragraph once the mouse has been still for the delay.</p>
+<p>Making NVDA's mouse tracking wait until the mouse has stopped is a separate add-on, <strong>Mouse Echo Delay</strong>, from the same author. The two work together: with both installed, hovering reads a paragraph once the mouse has been still for the delay.</p>
+<h2>Changes</h2>
+<p><strong>0.6.0</strong>: reads a web page's or a PDF's own text before turning to OCR (whole paragraphs, list items one by one, the browse cursor follows the click, read on through the page); finds bullet dots in the picture for OCR; better OCR paragraphs for book-style text (mixed-font lines merged, a full line ending a sentence continues); a capital O or an avatar in front of a name is no longer taken for a bullet; the "Read text from" setting and the optional OCR beep.</p>
 <h2>Licence</h2>
 <p>Copyright &copy; 2026 Carrie on Accessibility. Free software under the GNU General Public License, version 2, the same licence as NVDA.</p>
 </body>

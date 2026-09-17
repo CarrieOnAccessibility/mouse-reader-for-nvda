@@ -77,11 +77,11 @@ CLICK_RETRY_MS = 120
 REST_MS = 200
 REST_PX = 4
 # Hover misses logged per snapshot, so the log shows what Chromium answered without flooding.
-HOVER_LOG_LIMIT = 8
+HOVER_LOG_LIMIT = 3
 # How many levels down to walk by rectangles from the container the app stopped at, and how
 # many of those walks to log per snapshot.
 MAX_DESCENT = 10
-DESCENT_LOG_LIMIT = 4
+DESCENT_LOG_LIMIT = 2
 # How far up from the element under the mouse to look for the page it is in, and for how long.
 MAX_ROOT_SEARCH = 25
 ROOT_SEARCH_BUDGET_MS = 300
@@ -670,7 +670,7 @@ class DocumentSnapshot(ocr.WindowSnapshot):
 			whole = info.copy()
 			bookmark = whole.bookmark
 			split = self._splitItems(whole)
-			if self._paragraphLogs < 6:
+			if self._paragraphLogs < 2:
 				self._paragraphLogs += 1
 				try:
 					raw = whole.text or ""
