@@ -21,6 +21,8 @@ recognised line nearest the click; that result is NVDA's usual OCR document (Esc
 
 from ctypes import byref
 from ctypes.wintypes import POINT, RECT
+import math
+import time
 
 import addonHandler
 import api
@@ -43,6 +45,9 @@ try:
 	addonHandler.initTranslation()
 except Exception:
 	pass
+
+REPEAT_CLICK_SECONDS = 4
+REPEAT_CLICK_PX = 40
 
 START_UNITS = {
 	"paragraph": textInfos.UNIT_PARAGRAPH,
@@ -135,6 +140,7 @@ class ReadFromHere:
 		self._settings = settings
 		self._sessionMode = None  # sayAll.CURSOR of the reading we started, or None
 		self._ocrDoc = None
+		self._lastStart = None  # (x, y, time) of the last click that started a reading
 
 	# ---- state ------------------------------------------------------------------------
 
@@ -170,6 +176,15 @@ class ReadFromHere:
 		queueHandler.queueFunction(queueHandler.eventQueue, self.readFrom, x, y)
 		return True
 
+	def _isRepeatClick(self, x: int, y: int) -> bool:
+		"""Another click within a few seconds, close to where reading started, while it is still
+		reading: an impatient second click, not a request to start over."""
+		last = self._lastStart
+		if last is None or not self.isReading():
+			return False
+		lx, ly, when = last
+		return time.time() - when < REPEAT_CLICK_SECONDS and math.hypot(x - lx, y - ly) < REPEAT_CLICK_PX
+
 	def readFromMouse(self):
 		x, y = winUser.getCursorPos()
 		self.readFrom(x, y)
@@ -178,6 +193,10 @@ class ReadFromHere:
 
 	def readFrom(self, x: int, y: int):
 		"""Main thread. Find text at the point and start reading from it."""
+		if self._isRepeatClick(x, y):
+			log.info("mouseReader: repeat click on the spot being read; letting it carry on")
+			return
+		self._lastStart = (x, y, time.time())
 		self.stop()
 		self._sessionMode = None
 		try:
@@ -339,7 +358,8 @@ class ReadFromHere:
 				pass
 		# Translators: reported while the window under the mouse is being OCRed.
 		ui.message(_("Recognizing"))
-		doc = _ocrDocumentClass()(recognizer, imgInfo, (x, y), startUnit, self)
+		# NVDA's object machinery only accepts keyword arguments when constructing an NVDAObject.
+		doc = _ocrDocumentClass()(recognizer=recognizer, imageInfo=imgInfo, point=(x, y), startUnit=startUnit, owner=self)
 		self._ocrDoc = doc
 		try:
 			doc.start()
