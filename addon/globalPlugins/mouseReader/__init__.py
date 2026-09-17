@@ -15,7 +15,6 @@
 import addonHandler
 import config
 import globalPluginHandler
-import gui
 import inputCore
 from gui import guiHelper
 from gui.settingsDialogs import NVDASettingsDialog, SettingsPanel
@@ -84,6 +83,34 @@ def levelLabel(level) -> str:
 	return level
 
 
+class HowToUseDialog(wx.Dialog):
+	"""A small window with the shortcuts in a read-only text box, which NVDA reads on focus and
+	the arrow keys can move through, and a Close button."""
+
+	def __init__(self, parent):
+		# Translators: title of the "How to use" window.
+		super().__init__(parent, title=_("How to use Mouse Reader"))
+		mainSizer = wx.BoxSizer(wx.VERTICAL)
+		sHelper = guiHelper.BoxSizerHelper(self, orientation=wx.VERTICAL)
+		self.text = sHelper.addLabeledControl(
+			# Translators: label of the read-only text box in the "How to use" window.
+			_("How to use:"),
+			wx.TextCtrl,
+			style=wx.TE_MULTILINE | wx.TE_READONLY,
+			size=(560, 220),
+		)
+		self.text.SetValue(HOW_TO_USE)
+		sHelper.addDialogDismissButtons(self.CreateButtonSizer(wx.CLOSE), separated=True)
+		self.Bind(wx.EVT_BUTTON, lambda evt: self.EndModal(wx.ID_CLOSE), id=wx.ID_CLOSE)
+		self.SetEscapeId(wx.ID_CLOSE)
+		mainSizer.Add(sHelper.sizer, border=guiHelper.BORDER_FOR_DIALOGS, flag=wx.ALL)
+		mainSizer.Fit(self)
+		self.SetSizer(mainSizer)
+		self.CentreOnScreen()
+		self.text.SetFocus()
+		self.text.SetInsertionPoint(0)
+
+
 class MouseReaderSettingsPanel(SettingsPanel):
 	# Translators: title of the Mouse Reader category in the NVDA Settings dialog.
 	title = _("Mouse Reader")
@@ -111,8 +138,11 @@ class MouseReaderSettingsPanel(SettingsPanel):
 		howToButton.Bind(wx.EVT_BUTTON, self._onHowTo)
 
 	def _onHowTo(self, evt):
-		# Translators: title of the "How to use" dialog.
-		gui.messageBox(HOW_TO_USE, _("How to use Mouse Reader"), wx.OK | wx.ICON_INFORMATION, self)
+		dialog = HowToUseDialog(self)
+		try:
+			dialog.ShowModal()
+		finally:
+			dialog.Destroy()
 
 	def onSave(self):
 		config.conf[CONF_SECTION]["enabled"] = self.enabledCheckBox.IsChecked()
