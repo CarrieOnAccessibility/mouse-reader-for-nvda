@@ -76,7 +76,7 @@ class MouseReaderSettingsPanel(SettingsPanel):
 		section = config.conf[CONF_SECTION]
 		self.clickCheckBox = sHelper.addItem(
 			# Translators: label of the check box that enables NVDA+control+click to recognise the window.
-			wx.CheckBox(self, label=_("&Recognize the window under the mouse with NVDA+control+click"))
+			wx.CheckBox(self, label=_("&Recognize with NVDA+control+click and read on with NVDA+shift+click"))
 		)
 		self.clickCheckBox.SetValue(bool(section["clickEnabled"]))
 		self.levelChoice = sHelper.addLabeledControl(
@@ -171,6 +171,18 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 		config.conf[CONF_SECTION]["hoverLevel"] = nextLevel
 		# Translators: reported when the hover level changes; {level} is Line, Paragraph or Block.
 		ui.message(_("Hover reads: {level}").format(level=levelLabel(nextLevel)))
+
+	@script(
+		# Translators: description of the command that reads on from the mouse position.
+		description=_("Reads on from the text under the mouse to the end of the window (same as NVDA+shift+click)"),
+		gesture="kb:NVDA+shift+enter",
+	)
+	def script_readAll(self, gesture):
+		try:
+			speech.pauseSpeech(False)  # shift in the shortcut may have left the voice paused
+		except Exception:
+			pass
+		self.reader.readAllAtMouse()
 
 	@script(
 		# Translators: description of the command that recognises the window under the mouse.

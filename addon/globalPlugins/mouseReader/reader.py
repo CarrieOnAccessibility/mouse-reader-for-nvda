@@ -43,13 +43,23 @@ def _keyDown(vk) -> bool:
 		return False
 
 
-def clickCombinationHeld() -> bool:
-	"""Is NVDA+control held? The NVDA key never reaches Windows, so only NVDA's own record of
-	held modifiers knows about it; control is checked there and with Windows too."""
+_SHIFT_KEYS = (winUser.VK_SHIFT, winUser.VK_LSHIFT, winUser.VK_RSHIFT)
+
+
+def clickCombinationHeld():
+	"""Which of our click combinations is held: "recognize" (NVDA+control), "readAll"
+	(NVDA+shift) or None. The NVDA key never reaches Windows, so only NVDA's own record of
+	held modifiers knows about it; control and shift are checked there and with Windows too."""
 	mods = set(keyboardHandler.currentModifiers)
 	if not any(keyboardHandler.isNVDAModifierKey(vk, ext) for vk, ext in mods):
-		return False
-	return any(vk in _CONTROL_KEYS for vk, ext in mods) or _keyDown(winUser.VK_CONTROL)
+		return None
+	ctrl = any(vk in _CONTROL_KEYS for vk, ext in mods) or _keyDown(winUser.VK_CONTROL)
+	shift = any(vk in _SHIFT_KEYS for vk, ext in mods) or _keyDown(winUser.VK_SHIFT)
+	if ctrl and not shift:
+		return "recognize"
+	if shift and not ctrl:
+		return "readAll"
+	return None
 
 
 class Reader:
@@ -72,19 +82,37 @@ class Reader:
 			msg == hook.WM_LBUTTONDOWN
 			and self._settings.clickEnabled()
 			and not (injected and config.conf["mouse"]["ignoreInjectedMouseInput"])
-			and clickCombinationHeld()
 		):
-			log.info("mouseReader: NVDA+control+click at (%d, %d)" % (x, y))
-			queueHandler.queueFunction(queueHandler.eventQueue, self.recognize, x, y)
-			return True
+			combination = clickCombinationHeld()
+			if combination == "recognize":
+				log.info("mouseReader: NVDA+control+click at (%d, %d)" % (x, y))
+				queueHandler.queueFunction(queueHandler.eventQueue, self.recognize, x, y)
+				return True
+			if combination == "readAll":
+				log.info("mouseReader: NVDA+shift+click at (%d, %d)" % (x, y))
+				queueHandler.queueFunction(queueHandler.eventQueue, self.readAll, x, y)
+				return True
 		queueHandler.queueFunction(queueHandler.eventQueue, self.forget, "click")
 		return False
 
 	def forget(self, why=""):
-		"""Drop the snapshot: the user clicked or typed, so the window has probably changed."""
+		"""Drop the snapshot (and stop reading all): the user clicked or typed, so the window
+		has probably changed."""
 		if self._ocr.snapshot is not None:
 			log.info("mouseReader: snapshot dropped (%s)" % why)
 			self._ocr.forget()
+		else:
+			ocr.stopReadingAll()
+
+	def readAllAtMouse(self):
+		x, y = winUser.getCursorPos()
+		self.readAll(x, y)
+
+	def readAll(self, x: int, y: int):
+		"""Main thread. Read on from the point, recognising the window first if need be."""
+		self._lastClick = (x, y, time.time())
+		if not self._ocr.readAll(x, y):
+			ui.message(_("Nothing under the mouse to recognize"))
 
 	def onGesture(self, gesture) -> bool:
 		"""inputCore.decide_executeGesture: any key press other than a bare modifier means the

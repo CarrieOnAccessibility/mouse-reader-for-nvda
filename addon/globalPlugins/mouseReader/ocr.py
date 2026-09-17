@@ -20,6 +20,11 @@ is still.
 Speaking a paragraph goes through NVDA's SpeechWithoutPauses, so the voice receives sentence
 sized pieces (one huge utterance is what froze the 32-bit voice bridge) while the paragraph
 still sounds like one continuous read.
+
+Reading on ("read all"): the recognised lines, in reading order, are wrapped in NVDA's own
+recognition-result object, never focused, and NVDA's Say All reads it from the review cursor
+placed at the unit under the pointer. Say All stops on any key press (NVDA's rule) and the
+add-on stops it on a click; the mouse is ignored while it reads, and the wheel does not stop it.
 """
 
 import ctypes
@@ -29,13 +34,16 @@ from ctypes import byref
 from ctypes.wintypes import POINT, RECT
 
 import addonHandler
+import api
 import queueHandler
 import speech
+import textInfos.offsets
 import ui
 import winGDI
 import winUser
 import wx
 from logHandler import log
+from speech import sayAll
 from winBindings import gdi32, user32
 
 try:
@@ -320,6 +328,21 @@ def speakParagraph(paragraph):
 		log.info("mouseReader: speaking a paragraph took %d ms (cancel %d ms, %d lines)" % (totalMs, cancelMs, len(paragraph.lines)))
 
 
+def isReadingAll() -> bool:
+	try:
+		return bool(sayAll.SayAllHandler and sayAll.SayAllHandler.isRunning())
+	except Exception:
+		return False
+
+
+def stopReadingAll():
+	try:
+		if sayAll.SayAllHandler:
+			sayAll.SayAllHandler.stop()
+	except Exception:
+		pass
+
+
 class Snapshot:
 	"""One recognised window: its reading units at every level, and which was read last."""
 
@@ -329,9 +352,55 @@ class Snapshot:
 		self.unitsByLevel = unitsByLevel  # level -> list of Paragraph
 		self.created = time.time()
 		self._lastSpoken = None  # (level, index)
+		self._doc = None  # built on first "read all"
+		self._lineOffsets = {}
 
 	def units(self, level):
 		return self.unitsByLevel.get(level) or self.unitsByLevel[LEVEL_PARAGRAPH]
+
+	# ---- read all --------------------------------------------------------------------------
+
+	def _lineKey(self, lineWords):
+		return (lineWords[0]["y"], lineWords[0]["x"])
+
+	def _buildDocument(self):
+		"""NVDA's recognition-result object over the lines in reading order (paragraph order),
+		never focused: it only gives Say All a text to read, chunked by line for the voice."""
+		from contentRecog import LinesWordsResult, recogUi
+
+		data = []
+		offset = 0
+		self._lineOffsets = {}
+		for unit in self.units(LEVEL_PARAGRAPH):
+			for line in unit.lines:
+				self._lineOffsets[self._lineKey(line)] = offset
+				data.append(line)
+				offset += sum(len(w["text"]) for w in line) + max(len(line) - 1, 0) + 1  # spaces + newline
+		left, top, width, height = self.rect
+		self._doc = recogUi.RecogResultNVDAObject(result=LinesWordsResult(data, _WindowImageInfo(left, top, width, height)))
+
+	def readAllFrom(self, x: int, y: int, level) -> bool:
+		"""Start NVDA's Say All at the unit under (or nearest) the point. Returns False if nothing to read."""
+		index = self.nearestUnit(x, y, level)
+		if index is None:
+			return False
+		unit = self.units(level)[index]
+		try:
+			if self._doc is None:
+				self._buildDocument()
+			offset = self._lineOffsets.get(self._lineKey(unit.lines[0]), 0)
+			info = self._doc.makeTextInfo(textInfos.offsets.Offsets(offset, offset))
+			if not api.setReviewPosition(info, clearNavigatorObject=True):
+				return False
+			self._lastSpoken = (level, index)
+			speech.cancelSpeech()
+			speech.pauseSpeech(False)  # shift in NVDA+shift+click can leave the voice paused
+			sayAll.SayAllHandler.readText(sayAll.CURSOR.REVIEW, startedFromScript=True)
+			log.info("mouseReader: reading all from unit %d" % (index + 1))
+			return True
+		except Exception:
+			log.exception("mouseReader: could not start reading all")
+			return False
 
 	def isFresh(self) -> bool:
 		return time.time() - self.created < SNAPSHOT_LIFETIME_SECONDS
@@ -424,10 +493,11 @@ class OcrReader:
 				pass
 			self._pending = None
 
-	def start(self, x: int, y: int, quiet: bool = False) -> bool:
+	def start(self, x: int, y: int, quiet: bool = False, readAllAfter: bool = False) -> bool:
 		"""Begin recognising the window under the point. Returns False if there is no window.
-		Once recognised, the paragraph under the point is read. quiet: a refresh after
-		scrolling, with no "Recognizing" announcement."""
+		Once recognised, the paragraph under the point is read, or, with readAllAfter, NVDA's
+		Say All reads on from it. quiet: a refresh after scrolling, with no "Recognizing"
+		announcement."""
 		try:
 			from contentRecog import uwpOcr
 		except Exception:
@@ -472,7 +542,7 @@ class OcrReader:
 		def onResult(result):
 			# Recogniser thread: hand over to the main thread.
 			log.info("mouseReader: OCR engine answered after %d ms" % int((time.time() - sent) * 1000))
-			queueHandler.queueFunction(queueHandler.eventQueue, self._onResult, recognizer, hwnd, rect, result, x, y, quiet)
+			queueHandler.queueFunction(queueHandler.eventQueue, self._onResult, recognizer, hwnd, rect, result, x, y, quiet, readAllAfter)
 
 		try:
 			recognizer.recognize(pixels, imgInfo, onResult)
@@ -482,7 +552,7 @@ class OcrReader:
 			ui.message(_("OCR is not available"))
 		return True
 
-	def _onResult(self, recognizer, hwnd, rect, result, x, y, quiet):
+	def _onResult(self, recognizer, hwnd, rect, result, x, y, quiet, readAllAfter=False):
 		if self._pending is not recognizer:
 			return  # superseded by a later request
 		self._pending = None
@@ -508,9 +578,15 @@ class OcrReader:
 			% tuple(len(snapshot.units(level)) for level in LEVELS)
 		)
 		level = self._level()
+		if readAllAfter:
+			if not snapshot.readAllFrom(x, y, level):
+				ui.message(_("No text recognized"))
+			return
 		# Read what is under the pointer now (for a click, the clicked spot; after scrolling,
 		# wherever the pointer is): the nearest unit for a click, only an exact hit after a scroll.
 		if quiet:
+			if isReadingAll():
+				return  # the reading carries on; the fresh snapshot waits for the next hover
 			cx, cy = winUser.getCursorPos()
 			if snapshot.covers(cx, cy):
 				snapshot.hover(cx, cy, level)
@@ -520,6 +596,16 @@ class OcrReader:
 			ui.message(_("No text recognized"))
 			return
 		snapshot.speakIndex(index, level)
+
+	def readAll(self, x: int, y: int) -> bool:
+		"""Read on from the point: from the fresh snapshot if it covers the point, else after
+		recognising the window. Returns False if there is no window under the point."""
+		stopReadingAll()
+		snapshot = self.snapshot
+		if snapshot is not None and snapshot.isFresh() and snapshot.covers(x, y):
+			if snapshot.readAllFrom(x, y, self._level()):
+				return True
+		return self.start(x, y, readAllAfter=True)
 
 	# ---- hover ---------------------------------------------------------------------------
 
@@ -538,6 +624,8 @@ class OcrReader:
 		checkMs = int((time.time() - started) * 1000)
 		if checkMs > SLOW_SPEECH_MS:
 			log.info("mouseReader: the window check took %d ms" % checkMs)
+		if isReadingAll():
+			return True  # the mouse is ignored while reading all; NVDA's tracking stays out too
 		snapshot.hover(x, y, self._level())
 		return True
 
@@ -559,6 +647,7 @@ class OcrReader:
 			self._wheelTimer.Start(WHEEL_RERECOGNIZE_MS)
 
 	def forget(self):
+		stopReadingAll()
 		self.snapshot = None
 		if self._wheelTimer is not None:
 			try:
