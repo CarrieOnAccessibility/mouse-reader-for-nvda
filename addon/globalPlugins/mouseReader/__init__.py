@@ -43,7 +43,7 @@ LEVEL_CHOICES = (
 )
 
 config.conf.spec[CONF_SECTION] = {
-	"clickEnabled": "boolean(default=True)",
+	"enabled": "boolean(default=True)",
 	"hoverLevel": "option(%s, default='%s')" % (", ".join("'%s'" % key for key, _label in LEVEL_CHOICES), ocr.LEVEL_PARAGRAPH),
 }
 
@@ -51,12 +51,35 @@ config.conf.spec[CONF_SECTION] = {
 class Settings:
 	"""Live view of the add-on's configuration (follows NVDA's configuration profiles)."""
 
-	def clickEnabled(self) -> bool:
-		return bool(config.conf[CONF_SECTION]["clickEnabled"])
+	def enabled(self) -> bool:
+		return bool(config.conf[CONF_SECTION]["enabled"])
 
 	def hoverLevel(self) -> str:
 		level = config.conf[CONF_SECTION]["hoverLevel"]
 		return level if level in ocr.LEVELS else ocr.LEVEL_PARAGRAPH
+
+
+# Translators: the text of the read-only "How to use" box in the settings panel.
+HOW_TO_USE = _(
+	"For apps where NVDA's mouse tracking is silent (Slack, VS Code, pictures of text).\n"
+	"\n"
+	"NVDA+control+click, or NVDA+control+enter with the pointer over the window: recognize "
+	"the window with Windows OCR and read the paragraph under the pointer. From then on, "
+	"hovering over that window reads its paragraphs, and scrolling the mouse wheel "
+	"recognizes it again.\n"
+	"\n"
+	"NVDA+shift+click, or NVDA+shift+enter: read from the paragraph under the pointer to "
+	"the end of the window. The mouse is ignored while it reads; any key, a click or leaving "
+	"the window stops it.\n"
+	"\n"
+	"A click or a key press drops the recognized text, since the window has probably "
+	"changed; recognize again when you need it. \"Hover reads\" below sets how much a hover "
+	"reads: a line, a paragraph, or a whole message or section."
+)
+
+
+# Translators: reported when a command is used while the add-on is turned off in its settings.
+OFF_MESSAGE = _("Mouse Reader is turned off in its settings")
 
 
 def levelLabel(level) -> str:
@@ -74,11 +97,19 @@ class MouseReaderSettingsPanel(SettingsPanel):
 	def makeSettings(self, settingsSizer):
 		sHelper = guiHelper.BoxSizerHelper(self, sizer=settingsSizer)
 		section = config.conf[CONF_SECTION]
-		self.clickCheckBox = sHelper.addItem(
-			# Translators: label of the check box that enables NVDA+control+click to recognise the window.
-			wx.CheckBox(self, label=_("&Recognize with NVDA+control+click and read on with NVDA+shift+click"))
+		self.enabledCheckBox = sHelper.addItem(
+			# Translators: label of the check box that turns the add-on on or off.
+			wx.CheckBox(self, label=_("&Enable Mouse Reader"))
 		)
-		self.clickCheckBox.SetValue(bool(section["clickEnabled"]))
+		self.enabledCheckBox.SetValue(bool(section["enabled"]))
+		howTo = sHelper.addLabeledControl(
+			# Translators: label of the read-only box that explains how to use the add-on.
+			_("How to &use:"),
+			wx.TextCtrl,
+			style=wx.TE_MULTILINE | wx.TE_READONLY,
+			size=(-1, 170),
+		)
+		howTo.SetValue(HOW_TO_USE)
 		self.levelChoice = sHelper.addLabeledControl(
 			# Translators: label of the dropdown that picks how much text a hover reads.
 			_("&Hover reads:"),
@@ -90,7 +121,7 @@ class MouseReaderSettingsPanel(SettingsPanel):
 		self.levelChoice.SetSelection(keys.index(current) if current in keys else 1)
 
 	def onSave(self):
-		config.conf[CONF_SECTION]["clickEnabled"] = self.clickCheckBox.IsChecked()
+		config.conf[CONF_SECTION]["enabled"] = self.enabledCheckBox.IsChecked()
 		config.conf[CONF_SECTION]["hoverLevel"] = LEVEL_CHOICES[self.levelChoice.GetSelection()][0]
 
 
@@ -178,6 +209,9 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 		gesture="kb:NVDA+shift+enter",
 	)
 	def script_readAll(self, gesture):
+		if not self.settings.enabled():
+			ui.message(OFF_MESSAGE)
+			return
 		try:
 			speech.pauseSpeech(False)  # shift in the shortcut may have left the voice paused
 		except Exception:
@@ -190,6 +224,9 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 		gesture="kb:NVDA+control+enter",
 	)
 	def script_recognize(self, gesture):
+		if not self.settings.enabled():
+			ui.message(OFF_MESSAGE)
+			return
 		try:
 			speech.pauseSpeech(False)  # a modifier in the shortcut may have left the voice paused
 		except Exception:

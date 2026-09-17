@@ -64,7 +64,7 @@ def clickCombinationHeld():
 
 class Reader:
 	def __init__(self, settings):
-		"""settings: object with clickEnabled() and hoverLevel() callables."""
+		"""settings: object with enabled() and hoverLevel() callables."""
 		self._settings = settings
 		self._ocr = ocr.OcrReader(settings.hoverLevel)
 		self._lastClick = None  # (x, y, time) of the last recognising click
@@ -80,7 +80,7 @@ class Reader:
 		say), after which the recognised text is stale: the snapshot is dropped."""
 		if (
 			msg == hook.WM_LBUTTONDOWN
-			and self._settings.clickEnabled()
+			and self._settings.enabled()
 			and not (injected and config.conf["mouse"]["ignoreInjectedMouseInput"])
 		):
 			combination = clickCombinationHeld()
@@ -127,6 +127,8 @@ class Reader:
 
 	def onWheel(self, x, y, injected):
 		"""Low-level hook (hook thread): the wheel turned. A recognised window may have scrolled."""
+		if not self._settings.enabled():
+			return
 		queueHandler.queueFunction(queueHandler.eventQueue, self._ocr.wheelScrolled, x, y)
 
 	def recognizeAtMouse(self):
@@ -156,4 +158,6 @@ class Reader:
 		fresh snapshot covers the point: it has read the paragraph there, or deliberately stayed
 		quiet (same paragraph, blank space), and NVDA's own mouse tracking should stay out so
 		the whole window behaves the same way."""
+		if not self._settings.enabled():
+			return False
 		return self._ocr.claim(x, y)
