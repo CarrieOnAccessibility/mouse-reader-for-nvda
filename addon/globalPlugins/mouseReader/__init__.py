@@ -64,15 +64,11 @@ class Settings:
 HOW_TO_USE = _(
 	"NVDA+control+click, or NVDA+control+enter: recognize the window under the mouse and read "
 	"the paragraph under the pointer. Then hover to read paragraphs; the mouse wheel "
-	"recognizes again.
-"
-	"
-"
+	"recognizes again.\n"
+	"\n"
 	"NVDA+shift+click, or NVDA+shift+enter: read from the paragraph under the pointer to the "
-	"end of the window. Any key, a click or leaving the window stops it.
-"
-	"
-"
+	"end of the window. Any key, a click or leaving the window stops it.\n"
+	"\n"
 	"A click or a key press drops the recognized text; recognize again when you need it."
 )
 
