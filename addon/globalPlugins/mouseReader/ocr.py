@@ -77,40 +77,18 @@ WHEEL_RERECOGNIZE_MS = 500
 # before OCR takes over.
 DOCUMENT_POLL_MS = 150
 DOCUMENT_WAIT_MS = 4000
-# The soft two-note chirp that marks a window being recognised with OCR (when the setting is
-# on): (pitch in Hz, length in ms) per note, and the volume out of 100 (NVDA's own beeps are 50).
-OCR_CHIRP = ((523, 40), (784, 60))
-OCR_CHIRP_VOLUME = 35
+# The short soft beep that marks a window being recognised with OCR (when the setting is on):
+# pitch, length, and volume out of 100 (NVDA's own beeps are 50).
+OCR_BEEP_HZ = 660
+OCR_BEEP_MS = 60
+OCR_BEEP_VOLUME = 35
 
 
-def ocrChirp():
-	"""Play the OCR chirp through NVDA's tone player: the notes are generated the way
-	tones.beep generates its one note, and fed one after the other. A plain soft beep if the
-	player cannot be reached this way."""
+def ocrBeep():
 	try:
-		if not tones.decide_beep.decide(hz=OCR_CHIRP[0][0], length=OCR_CHIRP[0][1], left=OCR_CHIRP_VOLUME, right=OCR_CHIRP_VOLUME, isSpeechBeepCommand=False):
-			return
+		tones.beep(OCR_BEEP_HZ, OCR_BEEP_MS, OCR_BEEP_VOLUME, OCR_BEEP_VOLUME)
 	except Exception:
 		pass
-	try:
-		import NVDAHelper
-
-		player = tones.player
-		buffers = []
-		for hz, ms in OCR_CHIRP:
-			size = NVDAHelper.localLib.generateBeep(None, hz, ms, OCR_CHIRP_VOLUME, OCR_CHIRP_VOLUME)
-			buf = ctypes.create_string_buffer(size)
-			NVDAHelper.localLib.generateBeep(buf, hz, ms, OCR_CHIRP_VOLUME, OCR_CHIRP_VOLUME)
-			buffers.append(buf.raw)
-		player.stop()
-		for raw in buffers:
-			player.feed(raw)
-	except Exception:
-		log.debugWarning("mouseReader: chirp failed; plain beep instead", exc_info=True)
-		try:
-			tones.beep(OCR_CHIRP[0][0], 70, OCR_CHIRP_VOLUME, OCR_CHIRP_VOLUME)
-		except Exception:
-			pass
 # Consecutive lines whose tops are further apart than this many typical line pitches start a
 # new paragraph (1 = normal spacing; a blank line between messages is about 2).
 PARAGRAPH_BREAK_FACTOR = 1.55
@@ -226,6 +204,12 @@ _BULLETS = frozenset("•·▪▫◦‣⁃●○■□◆◇➢➤►▶-–—*
 # list item, a short paragraph); the next line starts a new paragraph. Wrapped lines fill the
 # width, so they are left alone.
 SHORT_LINE_FRACTION = 0.75
+# Two OCR lines are pieces of one row (an italic run, a bold word, a font change: Windows OCR
+# often returns such a line in fragments) when their boxes overlap vertically by this share
+# of the shorter one and the horizontal gap between them is at most this many glyph heights.
+# Columns stand further apart than that.
+ROW_OVERLAP_FRACTION = 0.5
+ROW_GAP_HEIGHTS = 1.5
 _NUMBERING = re.compile(r"^\(?(\d{1,3}|[a-zA-Z]|[ivxlcIVXLC]{1,5})[.)]$")
 # A line ending like this ends a sentence; if the next line then starts like a new sentence
 # (capital, digit, opening quote or bracket) the line break is a paragraph break.
@@ -235,7 +219,9 @@ _SENTENCE_START = frozenset("\"\u201c\u2018'([")
 
 # A line ending before this fraction of its column's width, when the next line starts like a
 # sentence, is the end of a list item or paragraph even without punctuation: wrapped text
-# fills the width and carries on in lowercase.
+# fills the width and carries on in lowercase. A line that reaches this fraction is a full
+# line: in book text a sentence ends and the next begins, capital and all, in the middle of a
+# paragraph, so a full line ending a sentence goes on with its paragraph.
 CAPITAL_AFTER_SHORT_FRACTION = 0.9
 
 
@@ -256,14 +242,40 @@ def _startsSentence(words) -> bool:
 
 def breaksAfter(previousWords, words, previousShort=False) -> bool:
 	"""Should the line `words` start a new paragraph rather than join the one ending with
-	`previousWords`? True for a list item; for a sentence end followed by a sentence start;
-	and for a sentence start after a line that ended short of the width (previousShort)."""
+	`previousWords`? True for a list item, and for a sentence start after a line that ended
+	short of the width (previousShort): a full line goes on with its paragraph whatever its
+	punctuation, as book text does at every sentence boundary that lands on a line start."""
 	if startsItem(words):
 		return True
 	if not _startsSentence(words):
 		return False
-	last = previousWords[-1]["text"]
-	return bool(_SENTENCE_END.search(last)) or previousShort
+	return previousShort
+
+
+def mergeRows(lines):
+	"""Join OCR lines that are fragments of one row (see ROW_OVERLAP_FRACTION): a paragraph
+	rule looking at a fragment ending in a full stop, or at a fragment's short right edge,
+	would break where nothing breaks. Lines are dicts with top/bottom/left/right/words."""
+	merged = []
+	for line in sorted(lines, key=lambda l: (l["top"], l["left"])):
+		height = line["bottom"] - line["top"]
+		for row in merged:
+			rowHeight = row["bottom"] - row["top"]
+			overlap = min(line["bottom"], row["bottom"]) - max(line["top"], row["top"])
+			if overlap <= 0 or overlap < ROW_OVERLAP_FRACTION * min(height, rowHeight):
+				continue
+			gap = line["left"] - row["right"] if line["left"] >= row["left"] else row["left"] - line["right"]
+			if gap > ROW_GAP_HEIGHTS * max(height, rowHeight):
+				continue
+			row["words"] = sorted(row["words"] + line["words"], key=lambda w: w["x"])
+			row["top"] = min(row["top"], line["top"])
+			row["bottom"] = max(row["bottom"], line["bottom"])
+			row["left"] = min(row["left"], line["left"])
+			row["right"] = max(row["right"], line["right"])
+			break
+		else:
+			merged.append(dict(line))
+	return merged
 
 
 def groupUnits(data, level):
@@ -291,6 +303,7 @@ def groupUnits(data, level):
 		lines.append({"top": top, "bottom": bottom, "left": left, "right": right, "words": words})
 	if not lines:
 		return []
+	lines = mergeRows(lines)
 	lines.sort(key=lambda line: (line["top"], line["left"]))
 	# The right edge of each line's column: the furthest right of the lines it overlaps
 	# horizontally, so a short line can be told from a full one.
@@ -302,15 +315,30 @@ def groupUnits(data, level):
 	typical = heights[len(heights) // 2] or 1
 	# The typical line pitch (top to top of consecutive, horizontally overlapping lines) is a
 	# steadier yardstick than glyph height, which changes with ascenders and descenders.
+	# Each line's nearest neighbour below in its own column (the next line in top order may be
+	# in another column). Pairs whose upper line fills its column are wrapped lines of one
+	# paragraph, and give the true line pitch however generous the leading is.
 	pitches = []
-	for i in range(len(lines) - 1):
-		a, b = lines[i], lines[i + 1]
-		if _overlap(a["left"], a["right"], b["left"], b["right"]) > 0 and 0 < b["top"] - a["top"] < typical * 3:
-			pitches.append(b["top"] - a["top"])
-	pitch = sorted(pitches)[len(pitches) // 2] if pitches else typical * 1.5
-	# In a chat made of one-line messages most pairs are message gaps, which would inflate the
-	# estimate; normal line spacing is never much more than 1.7 glyph heights.
-	pitch = min(pitch, typical * 1.7)
+	fullPitches = []
+	for a in lines:
+		below = None
+		for b in lines:
+			if b is a or b["top"] <= a["top"] or _overlap(a["left"], a["right"], b["left"], b["right"]) <= 0:
+				continue
+			if below is None or b["top"] < below["top"]:
+				below = b
+		if below is None or not 0 < below["top"] - a["top"] < typical * 3:
+			continue
+		pitches.append(below["top"] - a["top"])
+		if a["right"] >= a["columnRight"] * CAPITAL_AFTER_SHORT_FRACTION:
+			fullPitches.append(below["top"] - a["top"])
+	if len(fullPitches) >= 2:
+		pitch = sorted(fullPitches)[len(fullPitches) // 2]
+	else:
+		pitch = sorted(pitches)[len(pitches) // 2] if pitches else typical * 1.5
+		# In a chat made of one-line messages most pairs are message gaps, which would inflate
+		# the estimate; normal line spacing is never much more than 1.7 glyph heights.
+		pitch = min(pitch, typical * 1.7)
 	breakPitch = pitch * PARAGRAPH_BREAK_FACTOR
 
 	paragraphs = []
@@ -654,7 +682,7 @@ class OcrReader:
 		left, top, width, height = rect
 		imgInfo = _WindowImageInfo(left, top, width, height)
 		if self._beep():
-			ocrChirp()  # OCR, as opposed to a document read: audible even when speech is cut short
+			ocrBeep()  # OCR, as opposed to a document read: audible even when speech is cut short
 		if not quiet:
 			# Translators: reported while the window under the mouse is being recognised.
 			ui.message(_("Recognizing"))
