@@ -77,7 +77,7 @@ class FakeSettings(wx.Dialog):
 		left = wx.BoxSizer(wx.VERTICAL)
 		left.Add(wx.StaticText(self, label="&Categories:"), 0, wx.ALL, 5)
 		self.catList = CatList(self)
-		self.catList.InsertColumn(0, "Name")
+		self.catList.InsertColumn(0, "Name", width=self.FromDIP(200))
 		self.catList.InsertColumn(1, "Status", width=self.FromDIP(90))
 		for name in CATEGORIES:
 			self.catList.Append((name, "Enabled"))
@@ -85,7 +85,7 @@ class FakeSettings(wx.Dialog):
 		self.catList.EnsureVisible(CATEGORIES.index(category))
 		left.Add(self.catList, 1, wx.EXPAND | wx.ALL, 5)
 		grid.Add(left, 0, wx.EXPAND)
-		grid.SetItemMinSize(left, self.FromDIP(wx.Size(300, -1)))
+		grid.SetItemMinSize(left, self.FromDIP(wx.Size(320, -1)))
 		self.container = wx.Panel(self)
 		panel = wx.Panel(self.container)
 		ps = wx.BoxSizer(wx.VERTICAL)
@@ -166,9 +166,12 @@ class _RECT(ctypes.Structure):
 	_fields_ = [("l", ctypes.c_long), ("t", ctypes.c_long), ("r", ctypes.c_long), ("b", ctypes.c_long)]
 
 
-def screenshot(hwnd, path, pad=8):
+def screenshot(hwnd, path, pad=0):
+	# The visible frame (DWM excludes the invisible resize borders GetWindowRect includes).
 	r = _RECT()
-	ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(r))
+	DWMWA_EXTENDED_FRAME_BOUNDS = 9
+	if ctypes.windll.dwmapi.DwmGetWindowAttribute(ctypes.c_void_p(hwnd), DWMWA_EXTENDED_FRAME_BOUNDS, ctypes.byref(r), ctypes.sizeof(r)) != 0:
+		ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(r))
 	img = ImageGrab.grab(bbox=(r.l - pad, r.t - pad, r.r + pad, r.b + pad), all_screens=True)
 	img.save(path)
 	print("saved", path, img.size)
@@ -202,6 +205,7 @@ def step():
 	wx.CallLater(900, lambda: (screenshot(win.GetHandle(), path), wx.CallLater(200, step)))
 
 
-wx.CallLater(300, step)
+app.SetExitOnFrameDelete(False)  # the loop must survive between one window and the next
+step()  # the first window must exist before the loop starts, or the loop ends at once
 app.MainLoop()
 print("done")
