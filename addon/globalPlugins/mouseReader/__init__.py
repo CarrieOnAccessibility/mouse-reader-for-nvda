@@ -59,16 +59,25 @@ class Settings:
 		return level if level in ocr.LEVELS else ocr.LEVEL_PARAGRAPH
 
 
-# Translators: the text of the "How to use" dialog.
+# Translators: the text of the "How to use" window.
 HOW_TO_USE = _(
-	"NVDA+control+click, or NVDA+control+enter: recognize the window under the mouse and read "
-	"the paragraph under the pointer. Then hover to read paragraphs; the mouse wheel "
-	"recognizes again.\n"
+	"Mouse Reader uses OCR to read text that NVDA's mouse tracking, also known as mouse echo, "
+	"cannot read.\n"
 	"\n"
-	"NVDA+shift+click, or NVDA+shift+enter: read from the paragraph under the pointer to the "
-	"end of the window. Any key, a click or leaving the window stops it.\n"
+	"Hold Control+NVDA and click where you want NVDA to read. Mouse Reader takes a screenshot of "
+	"the window and reads the paragraph you clicked. If mouse tracking is on, you can then move "
+	"the mouse over other text to hear it. You can also place the mouse where you want reading to "
+	"start and press Control+NVDA+Enter.\n"
 	"\n"
-	"A click or a key press drops the recognized text; recognize again when you need it."
+	"In a window that scrolls, roll the mouse wheel and Mouse Reader recognizes the screen again. "
+	"Clicking or pressing a key ends the recognition.\n"
+	"\n"
+	"Hold Shift+NVDA and click, or press Shift+NVDA+Enter, to start continuous reading from that "
+	"point. Continuous reading ignores mouse movement, even with mouse tracking on, and stops when "
+	"you click or press a key.\n"
+	"\n"
+	"Please note that OCR reads a picture of the screen, so it can misread words, miss small or "
+	"faint text, and does not know about links, headings or other structure."
 )
 
 
@@ -139,6 +148,16 @@ class MouseReaderSettingsPanel(SettingsPanel):
 		# Translators: label of the button that opens a short explanation of the add-on.
 		howToButton = sHelper.addItem(wx.Button(self, label=_("&How to use...")))
 		howToButton.Bind(wx.EVT_BUTTON, self._onHowTo)
+		note = wx.StaticText(
+			self,
+			# Translators: explanatory text shown at the end of the Mouse Reader settings category.
+			label=_(
+				"Hovering to hear text needs NVDA's mouse tracking to be on (NVDA+M). "
+				"The click and Enter commands work either way."
+			),
+		)
+		note.Wrap(self.scaleSize(500))
+		sHelper.addItem(note)
 
 	def _onHowTo(self, evt):
 		dialog = HowToUseDialog(self)
