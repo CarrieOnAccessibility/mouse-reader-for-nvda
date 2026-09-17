@@ -23,6 +23,7 @@ still sounds like one continuous read.
 """
 
 import ctypes
+import re
 import time
 from ctypes import byref
 from ctypes.wintypes import POINT, RECT
@@ -41,6 +42,11 @@ try:
 	addonHandler.initTranslation()
 except Exception:
 	pass
+
+LEVEL_LINE = "line"
+LEVEL_PARAGRAPH = "paragraph"
+LEVEL_BLOCK = "block"
+LEVELS = (LEVEL_LINE, LEVEL_PARAGRAPH, LEVEL_BLOCK)
 
 PW_RENDERFULLCONTENT = 0x00000002
 SNAPSHOT_LIFETIME_SECONDS = 180
@@ -154,14 +160,45 @@ def _overlap(aLeft, aRight, bLeft, bRight):
 	return max(0, min(aRight, bRight) - max(aLeft, bLeft))
 
 
-def groupParagraphs(data):
-	"""Windows OCR lines (lists of word dicts, picture coordinates) -> list of Paragraph, in
-	reading order.
+# A line that starts with one of these, or with a numbering like "1." "2)" "(3)" "a." "iv.",
+# is a list item and starts a paragraph of its own.
+_BULLETS = frozenset("•·▪▫◦‣⁃●○■□◆◇➢➤►▶-–—*»>")
+_NUMBERING = re.compile(r"^\(?(\d{1,3}|[a-zA-Z]|[ivxlcIVXLC]{1,5})[.)]$")
+# A line ending like this ends a sentence; if the next line then starts like a new sentence
+# (capital, digit, opening quote or bracket) the line break is a paragraph break.
+_SENTENCE_END = re.compile(r"[.!?:;…]['\"\u201d\u2019)\]]*$")
+_SENTENCE_START = frozenset("\"\u201c\u2018'([")
 
-	A line joins the paragraph directly above it when the vertical gap is small *and* the two
-	overlap horizontally; a sidebar and a message list at the same heights therefore stay
-	apart. Paragraphs are then ordered column by column (left to right), top to bottom within
-	a column.
+
+def startsItem(words) -> bool:
+	first = words[0]["text"]
+	return first in _BULLETS or bool(_NUMBERING.match(first))
+
+
+def breaksAfter(previousWords, words) -> bool:
+	"""Should the line `words` start a new paragraph rather than join the one ending with
+	`previousWords`? True for a list item, and for a sentence end followed by a sentence start."""
+	if startsItem(words):
+		return True
+	last = previousWords[-1]["text"]
+	first = words[0]["text"]
+	if not _SENTENCE_END.search(last):
+		return False
+	ch = first[0]
+	return ch.isupper() or ch.isdigit() or ch in _SENTENCE_START
+
+
+def groupUnits(data, level):
+	"""Windows OCR lines (lists of word dicts, picture coordinates) -> list of Paragraph (the
+	reading units for the level), in reading order.
+
+	LEVEL_BLOCK: a line joins the block directly above it when the vertical gap is small *and*
+	the two overlap horizontally, so a whole message or section is one unit (a sidebar and a
+	message list at the same heights stay apart).
+	LEVEL_PARAGRAPH: as a block, but a list item, or a sentence end followed by a sentence
+	start (see breaksAfter), also starts a new unit.
+	LEVEL_LINE: every recognised line is its own unit.
+	Units are ordered column by column (left to right), top to bottom within a column.
 	"""
 	lines = []
 	for words in data:
@@ -196,12 +233,14 @@ def groupParagraphs(data):
 	for line in lines:
 		best = None
 		bestOverlap = 0
-		for p in paragraphs:
+		for p in paragraphs if level != LEVEL_LINE else ():
 			if line["top"] - p["lastTop"] > breakPitch or line["top"] < p["top"]:
 				continue
 			overlap = _overlap(line["left"], line["right"], p["left"], p["right"])
 			if overlap > bestOverlap:
 				best, bestOverlap = p, overlap
+		if best is not None and level == LEVEL_PARAGRAPH and breaksAfter(best["lines"][-1], line["words"]):
+			best = None
 		if best is None:
 			paragraphs.append(dict(line, lines=[line["words"]], lastTop=line["top"]))
 			continue
@@ -229,26 +268,38 @@ def groupParagraphs(data):
 	return [Paragraph(p["lines"]) for p in ordered]
 
 
+# Speech calls slower than this are logged, to tell a slow voice from a slow app.
+SLOW_SPEECH_MS = 150
+
+
 def speakParagraph(paragraph):
 	"""Speak a whole paragraph, handed to the voice in sentence-sized pieces."""
 	from speech.speechWithoutPauses import SpeechWithoutPauses
 
+	started = time.time()
 	speech.cancelSpeech()
+	cancelMs = int((time.time() - started) * 1000)
 	reader = SpeechWithoutPauses(speakFunc=speech.speak)
 	for line in paragraph.lines:
 		reader.speakWithoutPauses([" ".join(w["text"] for w in line) + " "])
 	reader.speakWithoutPauses(None)  # flush whatever is left
+	totalMs = int((time.time() - started) * 1000)
+	if totalMs > SLOW_SPEECH_MS:
+		log.info("mouseReader: speaking a paragraph took %d ms (cancel %d ms, %d lines)" % (totalMs, cancelMs, len(paragraph.lines)))
 
 
 class Snapshot:
-	"""One recognised window: its paragraphs, and which one was read last."""
+	"""One recognised window: its reading units at every level, and which was read last."""
 
-	def __init__(self, hwnd, rect, paragraphs):
+	def __init__(self, hwnd, rect, unitsByLevel):
 		self.hwnd = hwnd
 		self.rect = rect  # screen: left, top, width, height
-		self.paragraphs = paragraphs
+		self.unitsByLevel = unitsByLevel  # level -> list of Paragraph
 		self.created = time.time()
-		self._lastSpoken = None
+		self._lastSpoken = None  # (level, index)
+
+	def units(self, level):
+		return self.unitsByLevel.get(level) or self.unitsByLevel[LEVEL_PARAGRAPH]
 
 	def isFresh(self) -> bool:
 		return time.time() - self.created < SNAPSHOT_LIFETIME_SECONDS
@@ -269,20 +320,21 @@ class Snapshot:
 	def _toPicture(self, x, y):
 		return x - self.rect[0], y - self.rect[1]
 
-	def paragraphAt(self, x: int, y: int):
-		"""Index of the paragraph whose box contains the point, or None."""
+	def unitAt(self, x: int, y: int, level):
+		"""Index of the unit (at the level) whose box contains the point, or None."""
 		px, py = self._toPicture(x, y)
-		for i, p in enumerate(self.paragraphs):
+		for i, p in enumerate(self.units(level)):
 			if p.left <= px < p.right and p.top <= py < p.bottom:
 				return i
 		return None
 
-	def nearestParagraph(self, x: int, y: int):
-		"""For a click: the paragraph under the point, else the nearest one vertically."""
-		found = self.paragraphAt(x, y)
+	def nearestUnit(self, x: int, y: int, level):
+		"""For a click: the unit under the point, else the nearest one vertically."""
+		found = self.unitAt(x, y, level)
 		if found is not None:
 			return found
-		if not self.paragraphs:
+		units = self.units(level)
+		if not units:
 			return None
 		px, py = self._toPicture(x, y)
 
@@ -291,34 +343,36 @@ class Snapshot:
 				return 0
 			return min(abs(py - p.top), abs(py - p.bottom))
 
-		return min(range(len(self.paragraphs)), key=lambda i: distance(self.paragraphs[i]))
+		return min(range(len(units)), key=lambda i: distance(units[i]))
 
-	def speakIndex(self, index):
-		self._lastSpoken = index
-		speakParagraph(self.paragraphs[index])
+	def speakIndex(self, index, level):
+		self._lastSpoken = (level, index)
+		speakParagraph(self.units(level)[index])
 
-	def hover(self, x: int, y: int) -> bool:
-		"""Read the paragraph under the point when it is a different one from the last paragraph
-		read. Blank space and the paragraph just read leave things alone (so panning Magnifier
-		does not repeat it). Returns True when something was read."""
-		index = self.paragraphAt(x, y)
-		if index is None or index == self._lastSpoken:
+	def hover(self, x: int, y: int, level) -> bool:
+		"""Read the unit under the point when it is a different one from the unit read last.
+		Blank space and the unit just read leave things alone (so panning Magnifier does not
+		repeat it). Returns True when something was read."""
+		index = self.unitAt(x, y, level)
+		if index is None or (level, index) == self._lastSpoken:
 			return False
-		self.speakIndex(index)
+		self.speakIndex(index, level)
 		return True
 
 
 def buildSnapshot(hwnd, rect, data):
-	paragraphs = groupParagraphs(data)
-	if not paragraphs:
+	unitsByLevel = {level: groupUnits(data, level) for level in LEVELS}
+	if not unitsByLevel[LEVEL_PARAGRAPH]:
 		return None
-	return Snapshot(hwnd, rect, paragraphs)
+	return Snapshot(hwnd, rect, unitsByLevel)
 
 
 class OcrReader:
 	"""Runs the recognition for a click or the wheel; keeps the snapshot for hovering."""
 
-	def __init__(self):
+	def __init__(self, levelFunc):
+		"""levelFunc: callable returning the current level (LEVEL_LINE / _PARAGRAPH / _BLOCK)."""
+		self._level = levelFunc
 		self.snapshot = None
 		self._pending = None  # recognizer of a recognition still in flight
 		self._wheelTimer = None
@@ -418,21 +472,22 @@ class OcrReader:
 			return
 		self.snapshot = snapshot
 		log.info(
-			"mouseReader: OCR found %d paragraphs (%d lines)"
-			% (len(snapshot.paragraphs), sum(len(p.lines) for p in snapshot.paragraphs))
+			"mouseReader: OCR found %d lines, %d paragraphs, %d blocks"
+			% tuple(len(snapshot.units(level)) for level in LEVELS)
 		)
+		level = self._level()
 		# Read what is under the pointer now (for a click, the clicked spot; after scrolling,
-		# wherever the pointer is): the nearest paragraph for a click, only an exact hit after a scroll.
+		# wherever the pointer is): the nearest unit for a click, only an exact hit after a scroll.
 		if quiet:
 			cx, cy = winUser.getCursorPos()
 			if snapshot.covers(cx, cy):
-				snapshot.hover(cx, cy)
+				snapshot.hover(cx, cy, level)
 			return
-		index = snapshot.nearestParagraph(x, y)
+		index = snapshot.nearestUnit(x, y, level)
 		if index is None:
 			ui.message(_("No text recognized"))
 			return
-		snapshot.speakIndex(index)
+		snapshot.speakIndex(index, level)
 
 	# ---- hover ---------------------------------------------------------------------------
 
@@ -445,9 +500,13 @@ class OcrReader:
 		if not snapshot.isFresh():
 			self.snapshot = None
 			return False
+		started = time.time()
 		if not snapshot.covers(x, y):
 			return False
-		snapshot.hover(x, y)
+		checkMs = int((time.time() - started) * 1000)
+		if checkMs > SLOW_SPEECH_MS:
+			log.info("mouseReader: the window check took %d ms" % checkMs)
+		snapshot.hover(x, y, self._level())
 		return True
 
 	# ---- the wheel -----------------------------------------------------------------------
@@ -466,6 +525,14 @@ class OcrReader:
 			self._wheelTimer = wx.CallLater(WHEEL_RERECOGNIZE_MS, self._reRecognize)
 		else:
 			self._wheelTimer.Start(WHEEL_RERECOGNIZE_MS)
+
+	def forget(self):
+		self.snapshot = None
+		if self._wheelTimer is not None:
+			try:
+				self._wheelTimer.Stop()
+			except Exception:
+				pass
 
 	def _reRecognize(self):
 		pos = self._wheelPos

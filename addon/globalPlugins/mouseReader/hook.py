@@ -19,6 +19,9 @@ from logHandler import log
 WM_MOUSEMOVE = 0x0200
 WM_LBUTTONDOWN = 0x0201
 WM_LBUTTONUP = 0x0202
+WM_RBUTTONDOWN = 0x0204
+WM_MBUTTONDOWN = 0x0207
+WM_XBUTTONDOWN = 0x020B
 WM_MOUSEWHEEL = 0x020A
 WM_MOUSEHWHEEL = 0x020E
 
@@ -67,6 +70,9 @@ class MouseHook:
 				if self.onButton and self.onButton(msg, x, y, injected):
 					self._swallowNextUp = True
 					return False
+			elif msg in (WM_RBUTTONDOWN, WM_MBUTTONDOWN, WM_XBUTTONDOWN):
+				if self.onButton:
+					self.onButton(msg, x, y, injected)  # never swallowed; reported so a snapshot can be dropped
 			elif msg == WM_LBUTTONUP and self._swallowNextUp:
 				self._swallowNextUp = False
 				return False

@@ -15,14 +15,16 @@
 import addonHandler
 import config
 import globalPluginHandler
+import inputCore
 from gui import guiHelper
 from gui.settingsDialogs import NVDASettingsDialog, SettingsPanel
 from logHandler import log
 from scriptHandler import script
 import speech
+import ui
 import wx
 
-from . import hook, reader
+from . import hook, ocr, reader
 
 try:
 	addonHandler.initTranslation()
@@ -31,8 +33,18 @@ except Exception:  # not running from an installed add-on (e.g. scratchpad)
 
 CONF_SECTION = "mouseReader"
 
+LEVEL_CHOICES = (
+	# Translators: a hover level: every recognised line is read on its own.
+	(ocr.LEVEL_LINE, _("Line")),
+	# Translators: a hover level: lines grouped into paragraphs (sentence ends and list items start new ones).
+	(ocr.LEVEL_PARAGRAPH, _("Paragraph")),
+	# Translators: a hover level: a whole message or section (lines grouped by spacing only).
+	(ocr.LEVEL_BLOCK, _("Block (a whole message or section)")),
+)
+
 config.conf.spec[CONF_SECTION] = {
 	"clickEnabled": "boolean(default=True)",
+	"hoverLevel": "option(%s, default='%s')" % (", ".join("'%s'" % key for key, _label in LEVEL_CHOICES), ocr.LEVEL_PARAGRAPH),
 }
 
 
@@ -41,6 +53,17 @@ class Settings:
 
 	def clickEnabled(self) -> bool:
 		return bool(config.conf[CONF_SECTION]["clickEnabled"])
+
+	def hoverLevel(self) -> str:
+		level = config.conf[CONF_SECTION]["hoverLevel"]
+		return level if level in ocr.LEVELS else ocr.LEVEL_PARAGRAPH
+
+
+def levelLabel(level) -> str:
+	for key, label in LEVEL_CHOICES:
+		if key == level:
+			return label
+	return level
 
 
 class MouseReaderSettingsPanel(SettingsPanel):
@@ -56,9 +79,19 @@ class MouseReaderSettingsPanel(SettingsPanel):
 			wx.CheckBox(self, label=_("&Recognize the window under the mouse with NVDA+control+click"))
 		)
 		self.clickCheckBox.SetValue(bool(section["clickEnabled"]))
+		self.levelChoice = sHelper.addLabeledControl(
+			# Translators: label of the dropdown that picks how much text a hover reads.
+			_("&Hover reads:"),
+			wx.Choice,
+			choices=[label for _key, label in LEVEL_CHOICES],
+		)
+		keys = [key for key, _label in LEVEL_CHOICES]
+		current = section["hoverLevel"]
+		self.levelChoice.SetSelection(keys.index(current) if current in keys else 1)
 
 	def onSave(self):
 		config.conf[CONF_SECTION]["clickEnabled"] = self.clickCheckBox.IsChecked()
+		config.conf[CONF_SECTION]["hoverLevel"] = LEVEL_CHOICES[self.levelChoice.GetSelection()][0]
 
 
 class GlobalPlugin(globalPluginHandler.GlobalPlugin):
@@ -77,8 +110,16 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 			self.hook.install()
 		except Exception:
 			log.exception("mouseReader: could not install the mouse hook")
+		try:
+			inputCore.decide_executeGesture.register(self._onGesture)
+		except Exception:
+			log.exception("mouseReader: could not watch key presses")
 
 	def terminate(self):
+		try:
+			inputCore.decide_executeGesture.unregister(self._onGesture)
+		except Exception:
+			pass
 		try:
 			NVDASettingsDialog.categoryClasses.remove(MouseReaderSettingsPanel)
 		except ValueError:
@@ -93,6 +134,17 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 			log.exception("mouseReader: could not stop cleanly")
 		super().terminate()
 
+	def _onGesture(self, gesture):
+		"""Every gesture NVDA is about to execute. Our own commands keep the snapshot; any other
+		key press drops it (the user is typing or commanding, so the window may have changed)."""
+		try:
+			script = getattr(gesture, "script", None)
+			if script is not None and getattr(script, "__self__", None) is self:
+				return True
+		except Exception:
+			pass
+		return self.reader.onGesture(gesture)
+
 	def event_mouseMove(self, obj, nextHandler, x, y):
 		# Inside a recognised window the snapshot answers the mouse, paragraph by paragraph, and
 		# NVDA's own mouse tracking stays out of it, so hovering is consistent across the window.
@@ -103,6 +155,18 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 		except Exception:
 			log.debugWarning("mouseReader: hover failed", exc_info=True)
 		nextHandler()
+
+	@script(
+		# Translators: description of the command that switches how much text a hover reads (no key by default).
+		description=_("Cycles what a hover reads in a recognized window: line, paragraph or block"),
+	)
+	def script_cycleLevel(self, gesture):
+		keys = [key for key, _label in LEVEL_CHOICES]
+		current = self.settings.hoverLevel()
+		nextLevel = keys[(keys.index(current) + 1) % len(keys)]
+		config.conf[CONF_SECTION]["hoverLevel"] = nextLevel
+		# Translators: reported when the hover level changes; {level} is Line, Paragraph or Block.
+		ui.message(_("Hover reads: {level}").format(level=levelLabel(nextLevel)))
 
 	@script(
 		# Translators: description of the command that recognises the window under the mouse.
