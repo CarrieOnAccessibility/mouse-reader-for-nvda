@@ -19,7 +19,7 @@ reading starts from the recognised line nearest the click; that result is NVDA's
 document (Escape leaves it).
 """
 
-from ctypes import POINT
+from ctypes.wintypes import POINT
 
 import addonHandler
 import api

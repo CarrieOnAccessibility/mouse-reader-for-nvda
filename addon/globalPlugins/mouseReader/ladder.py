@@ -24,7 +24,7 @@ has asked for something to be read.
 
 import api
 import controlTypes
-from ctypes import POINT
+from ctypes.wintypes import POINT
 from comtypes import COMError
 import displayModel
 import globalVars
