@@ -6,9 +6,10 @@
 #
 # NVDA+control+click or NVDA+control+enter recognises the window under the mouse with Windows
 # OCR and reads the paragraph under the pointer; from then on hovering reads recognised
-# paragraphs and the wheel recognises again (ocr.py, reader.py). This module is the NVDA
-# plumbing: config, the Settings category, the command, and the low-level mouse hook that
-# catches the click and the wheel (hook.py).
+# paragraphs and the wheel recognises again (ocr.py, reader.py). In a browse-mode document (a
+# web page, a PDF) the document's own text answers instead of OCR (document.py). This module
+# is the NVDA plumbing: config, the Settings category, the command, and the low-level mouse
+# hook that catches the click and the wheel (hook.py).
 #
 # The delay before mouse tracking reads is a separate add-on, Mouse Echo Delay.
 
@@ -231,7 +232,7 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 		# NVDA's own mouse tracking stays out of it, so hovering is consistent across the window.
 		# Everywhere else the event goes straight through to NVDA.
 		try:
-			if self.reader.onMouseMove(x, y):
+			if self.reader.onMouseMove(x, y, obj):
 				return
 		except Exception:
 			log.debugWarning("mouseReader: hover failed", exc_info=True)

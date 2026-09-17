@@ -25,6 +25,10 @@ Reading on ("read all"): the recognised lines, in reading order, are wrapped in 
 recognition-result object, never focused, and NVDA's Say All reads it from the review cursor
 placed at the unit under the pointer. Say All stops on any key press (NVDA's rule) and the
 add-on stops it on a click; the mouse is ignored while it reads, and the wheel does not stop it.
+
+Documents first. When the click lands in a browse-mode document (a web page, a PDF in Chrome
+or Edge) NVDA already holds the exact text, so no picture is taken: document.py answers the
+mouse from the document itself, through the same snapshot shape. OCR is for everything else.
 """
 
 import ctypes
@@ -335,21 +339,34 @@ def groupUnits(data, level):
 # Speech calls slower than this are logged, to tell a slow voice from a slow app.
 SLOW_SPEECH_MS = 150
 
+# Translators: message when a click in a document (a web page, a PDF) lands on no text at all.
+NO_TEXT_UNDER_MOUSE = _("No text under the mouse")
 
-def speakParagraph(paragraph):
-	"""Speak a whole paragraph, handed to the voice in sentence-sized pieces."""
+
+def speakLines(lines):
+	"""Speak lines of text as one continuous read, handed to the voice in sentence-sized pieces."""
 	from speech.speechWithoutPauses import SpeechWithoutPauses
 
 	started = time.time()
 	speech.cancelSpeech()
 	cancelMs = int((time.time() - started) * 1000)
 	reader = SpeechWithoutPauses(speakFunc=speech.speak)
-	for line in paragraph.lines:
-		reader.speakWithoutPauses([" ".join(w["text"] for w in line) + " "])
+	count = 0
+	for line in lines:
+		line = line.strip()
+		if not line:
+			continue
+		reader.speakWithoutPauses([line + " "])
+		count += 1
 	reader.speakWithoutPauses(None)  # flush whatever is left
 	totalMs = int((time.time() - started) * 1000)
 	if totalMs > SLOW_SPEECH_MS:
-		log.info("mouseReader: speaking a paragraph took %d ms (cancel %d ms, %d lines)" % (totalMs, cancelMs, len(paragraph.lines)))
+		log.info("mouseReader: speaking a paragraph took %d ms (cancel %d ms, %d lines)" % (totalMs, cancelMs, count))
+
+
+def speakParagraph(paragraph):
+	"""Speak a whole recognised paragraph, line by line."""
+	speakLines(" ".join(w["text"] for w in line) for line in paragraph.lines)
 
 
 def isReadingAll() -> bool:
@@ -367,14 +384,40 @@ def stopReadingAll():
 		pass
 
 
-class Snapshot:
+class WindowSnapshot:
+	"""What answers the mouse over one window: where the window is, how long the answer is
+	trusted for, and whether the window under the pointer is still the same one."""
+
+	live = False  # True when the source answers each hover itself (a document): a scroll needs no new recognition
+
+	def __init__(self, hwnd, rect):
+		self.hwnd = hwnd
+		self.rect = rect  # screen: left, top, width, height
+		self.created = time.time()
+
+	def isFresh(self) -> bool:
+		return time.time() - self.created < SNAPSHOT_LIFETIME_SECONDS
+
+	def contains(self, x: int, y: int) -> bool:
+		left, top, width, height = self.rect
+		return left <= x < left + width and top <= y < top + height
+
+	def covers(self, x: int, y: int) -> bool:
+		"""Is the point inside this snapshot *and* is its window still the one under the point?
+		Two maximised windows share the same rectangle, so the rectangle alone is not enough:
+		a snapshot of VS Code must not answer for Slack."""
+		if not self.contains(x, y):
+			return False
+		found = windowAt(x, y)
+		return found is not None and found[0] == self.hwnd
+
+
+class Snapshot(WindowSnapshot):
 	"""One recognised window: its reading units at every level, and which was read last."""
 
 	def __init__(self, hwnd, rect, unitsByLevel):
-		self.hwnd = hwnd
-		self.rect = rect  # screen: left, top, width, height
+		super().__init__(hwnd, rect)
 		self.unitsByLevel = unitsByLevel  # level -> list of Paragraph
-		self.created = time.time()
 		self._lastSpoken = None  # (level, index)
 		self._doc = None  # built on first "read all"
 		self._lineOffsets = {}
@@ -403,7 +446,7 @@ class Snapshot:
 		left, top, width, height = self.rect
 		self._doc = recogUi.RecogResultNVDAObject(result=LinesWordsResult(data, _WindowImageInfo(left, top, width, height)))
 
-	def readAllFrom(self, x: int, y: int, level) -> bool:
+	def readAllFrom(self, x: int, y: int, level, obj=None) -> bool:
 		"""Start NVDA's Say All at the unit under (or nearest) the point. Returns False if nothing to read."""
 		index = self.nearestUnit(x, y, level)
 		if index is None:
@@ -425,22 +468,6 @@ class Snapshot:
 		except Exception:
 			log.exception("mouseReader: could not start reading all")
 			return False
-
-	def isFresh(self) -> bool:
-		return time.time() - self.created < SNAPSHOT_LIFETIME_SECONDS
-
-	def contains(self, x: int, y: int) -> bool:
-		left, top, width, height = self.rect
-		return left <= x < left + width and top <= y < top + height
-
-	def covers(self, x: int, y: int) -> bool:
-		"""Is the point inside this snapshot *and* is its window still the one under the point?
-		Two maximised windows share the same rectangle, so the rectangle alone is not enough:
-		a snapshot of VS Code must not answer for Slack."""
-		if not self.contains(x, y):
-			return False
-		found = windowAt(x, y)
-		return found is not None and found[0] == self.hwnd
 
 	def _toPicture(self, x, y):
 		return x - self.rect[0], y - self.rect[1]
@@ -474,7 +501,7 @@ class Snapshot:
 		self._lastSpoken = (level, index)
 		speakParagraph(self.units(level)[index])
 
-	def hover(self, x: int, y: int, level) -> bool:
+	def hover(self, x: int, y: int, level, obj=None) -> bool:
 		"""Read the unit under the point when it is a different one from the unit read last.
 		Blank space and the unit just read leave things alone (so panning Magnifier does not
 		repeat it). Returns True when something was read."""
@@ -533,6 +560,8 @@ class OcrReader:
 		if found is None:
 			return False
 		hwnd, rect = found
+		if self._startDocument(x, y, quiet, readAllAfter):
+			return True
 		try:
 			recognizer = uwpOcr.UwpOcr()
 		except Exception:
@@ -574,6 +603,42 @@ class OcrReader:
 			log.exception("mouseReader: OCR failed to start")
 			self._pending = None
 			ui.message(_("OCR is not available"))
+		return True
+
+	def _startDocument(self, x: int, y: int, quiet: bool, readAllAfter: bool) -> bool:
+		"""If the point is in a browse-mode document, let the document answer the mouse (no OCR)
+		and read what is under the point now. False when there is no such document."""
+		from . import document
+
+		try:
+			found = document.documentAt(x, y)
+		except Exception:
+			log.exception("mouseReader: could not look for a document under the mouse")
+			return False
+		if found is None:
+			return False
+		snapshot, obj = found
+		if self._pending is not None:
+			try:
+				self._pending.cancel()  # an OCR still in flight would overwrite this snapshot
+			except Exception:
+				pass
+			self._pending = None
+		self.snapshot = snapshot
+		log.info("mouseReader: document under the mouse (%s); reading from it, no OCR" % snapshot.kind)
+		level = self._level()
+		if readAllAfter:
+			if not snapshot.readAllFrom(x, y, level, obj):
+				ui.message(NO_TEXT_UNDER_MOUSE)
+			return True
+		if quiet:
+			if not isReadingAll():
+				cx, cy = winUser.getCursorPos()
+				if snapshot.covers(cx, cy):
+					snapshot.hover(cx, cy, level, document.objectAt(cx, cy))
+			return True
+		if not snapshot.speakAt(x, y, level, obj):
+			ui.message(NO_TEXT_UNDER_MOUSE)
 		return True
 
 	def _onResult(self, recognizer, hwnd, rect, result, x, y, quiet, readAllAfter=False):
@@ -633,9 +698,11 @@ class OcrReader:
 
 	# ---- hover ---------------------------------------------------------------------------
 
-	def claim(self, x: int, y: int) -> bool:
-		"""Called for every mouse move NVDA reports. True when a fresh snapshot covers the point;
-		the paragraph there is read if it is not the one read last."""
+	def claim(self, x: int, y: int, obj=None) -> bool:
+		"""Called for every mouse move NVDA reports (obj: what NVDA found under the pointer). True
+		when a fresh snapshot covers the point; the paragraph there is read if it is not the one
+		read last. A document only answers for its own text and blank space, so its toolbar and
+		its controls still get NVDA's usual reading."""
 		snapshot = self.snapshot
 		if snapshot is None:
 			return False
@@ -645,12 +712,14 @@ class OcrReader:
 		started = time.time()
 		if not snapshot.covers(x, y):
 			return False
+		if snapshot.live and not snapshot.claims(obj):
+			return False
 		checkMs = int((time.time() - started) * 1000)
 		if checkMs > SLOW_SPEECH_MS:
 			log.info("mouseReader: the window check took %d ms" % checkMs)
 		if isReadingAll():
 			return True  # the mouse is ignored while reading all; NVDA's tracking stays out too
-		snapshot.hover(x, y, self._level())
+		snapshot.hover(x, y, self._level(), obj)
 		return True
 
 	# ---- the wheel -----------------------------------------------------------------------
@@ -659,8 +728,8 @@ class OcrReader:
 		"""Main thread. The wheel turned at the point; if that is over the recognised window,
 		recognise it again once the wheel has been quiet for a moment."""
 		snapshot = self.snapshot
-		if snapshot is None or not snapshot.contains(x, y):
-			return
+		if snapshot is None or snapshot.live or not snapshot.contains(x, y):
+			return  # a document answers each hover itself, scrolled or not
 		found = windowAt(x, y)
 		if found is None or found[0] != snapshot.hwnd:
 			return

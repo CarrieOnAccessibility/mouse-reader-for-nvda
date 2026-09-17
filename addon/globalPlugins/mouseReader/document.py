@@ -1,0 +1,383 @@
+# Mouse Reader: an NVDA add-on. Copyright (C) 2026 Carrie on Accessibility.
+# This program is free software: you can redistribute it and/or modify it under the terms of
+# the GNU General Public License as published by the Free Software Foundation, version 2.
+# See the LICENSE file for details.
+"""A browse-mode document under the mouse, read from NVDA's own copy of it instead of a picture.
+
+A web page, or a PDF open in Chrome or Edge, is text NVDA has already taken in (the buffer
+that browse mode reads from): the words are exact whatever the font looks like on screen, so
+there is nothing for OCR to add and plenty for it to get wrong. When NVDA+control+click lands
+in such a document, the document answers the mouse instead of a snapshot picture.
+
+Finding the text under the pointer goes the way NVDA's own mouse tracking goes: the element
+under the pointer (NVDA hands it to every mouse move; the click asks for it once), then the
+nearest element from there upwards that the buffer knows as a node (text leaves are folded
+into their parent's text), then the buffer paragraph that node begins. No UIA, and nothing
+that was not already happening on every mouse move with tracking on.
+
+Levels. Paragraph is the buffer's paragraph (a <p>, a list item, a heading, a PDF paragraph).
+Line is the visual line of the element under the pointer, as the app reports it. Block is
+the node one up from the paragraph's (a list, a section, a table cell, a PDF page region).
+
+Nothing is frozen: hovering asks the live document each time, so scrolling needs no second
+recognition. Blank space inside the document (margins, gaps between paragraphs) stays quiet,
+as it does over a picture; controls (a button, an edit field) and anything outside the
+document, such as the toolbar above it, are left to NVDA to read its own way.
+"""
+
+import time
+
+import addonHandler
+import api
+import controlTypes
+import speech
+import textInfos
+from logHandler import log
+from speech import sayAll
+
+from . import ocr
+
+try:
+	addonHandler.initTranslation()
+except Exception:
+	pass
+
+# How far up from the element under the pointer to look for an element the buffer knows.
+MAX_ANCESTORS = 8
+# Lookups slower than this are logged, to tell a slow app from a slow voice.
+SLOW_LOOKUP_MS = 150
+
+# Roles whose element, or whose text leaf, counts as text under the pointer. Anything else with
+# children is a container (blank space); anything else without children is a control.
+_TEXT_ROLES = frozenset(
+	role
+	for role in (
+		getattr(controlTypes.Role, name, None)
+		for name in ("STATICTEXT", "PARAGRAPH", "HEADING", "LINK", "LISTITEM", "TEXTFRAME", "BLOCKQUOTE", "CAPTION", "LABEL")
+	)
+	if role is not None
+)
+
+
+def objectAt(x: int, y: int):
+	"""The NVDA object under the point, found the way NVDA's mouse tracking finds it (UIA only
+	where NVDA itself already uses UIA for that window)."""
+	try:
+		return api.getDesktopObject().objectFromPoint(x, y)
+	except Exception:
+		log.debugWarning("mouseReader: objectFromPoint failed", exc_info=True)
+		return None
+
+
+def bufferOf(obj):
+	"""The in-process browse-mode buffer that holds obj, when there is one and it is ready."""
+	if obj is None:
+		return None
+	try:
+		from virtualBuffers import VirtualBuffer
+
+		ti = obj.treeInterceptor
+		if ti is None:
+			return None
+		if not isinstance(ti, VirtualBuffer):
+			log.info("mouseReader: the document under the mouse is not an in-process buffer (%s); using OCR" % type(ti).__name__)
+			return None
+		if getattr(ti, "isLoading", False) or not ti.isReady or not ti.isAlive:
+			log.info("mouseReader: the document under the mouse is still loading; using OCR")
+			return None
+		return ti
+	except Exception:
+		log.debugWarning("mouseReader: could not look for a document under the mouse", exc_info=True)
+		return None
+
+
+def documentAt(x: int, y: int):
+	"""(DocumentSnapshot, element under the point) when the point is in a browse-mode document,
+	else None."""
+	found = ocr.windowAt(x, y)
+	if found is None:
+		return None
+	obj = objectAt(x, y)
+	ti = bufferOf(obj)
+	if ti is None:
+		return None
+	hwnd, rect = found
+	return DocumentSnapshot(hwnd, rect, ti), obj
+
+
+def _clean(text) -> str:
+	return " ".join((text or "").replace("￼", " ").split())
+
+
+def _isText(obj) -> bool:
+	try:
+		return obj.role in _TEXT_ROLES
+	except Exception:
+		return False
+
+
+def _isContainer(obj) -> bool:
+	try:
+		return obj.childCount > 0
+	except Exception:
+		return False
+
+
+class Unit:
+	"""One reading unit of the document: what to say, and where it is (info: the buffer range;
+	None for a line, which is measured in the element rather than the buffer)."""
+
+	__slots__ = ("key", "text", "info")
+
+	def __init__(self, key, text, info=None):
+		self.key = key
+		self.text = text
+		self.info = info
+
+
+class DocumentSnapshot(ocr.WindowSnapshot):
+	"""A browse-mode document answering the mouse. Same shape as the OCR snapshot, but live."""
+
+	live = True
+
+	def __init__(self, hwnd, rect, ti):
+		super().__init__(hwnd, rect)
+		self._ti = ti
+		self._lastSpoken = None  # key of the unit read last
+		self._cache = {}  # (level, element id) -> Unit, for the life of the snapshot
+
+	@property
+	def kind(self) -> str:
+		return type(self._ti).__name__
+
+	def isFresh(self) -> bool:
+		if not super().isFresh():
+			return False
+		try:
+			return bool(self._ti.isAlive)
+		except Exception:
+			return False
+
+	# ---- what the pointer is over ----------------------------------------------------------
+
+	def inDocument(self, obj) -> bool:
+		"""Is the element under the pointer part of this document (not, say, the toolbar above it)?"""
+		if obj is None:
+			return False
+		try:
+			return obj.treeInterceptor is self._ti
+		except Exception:
+			return False
+
+	def claims(self, obj) -> bool:
+		"""Should the document answer this hover at all? Its text and its blank space, yes; a
+		control, or anything outside the document, no: NVDA reads those its own way."""
+		return self.inDocument(obj) and (_isText(obj) or _isContainer(obj))
+
+	@staticmethod
+	def _identity(obj):
+		try:
+			return obj.IA2UniqueID
+		except Exception:
+			return None
+
+	def _isRoot(self, obj) -> bool:
+		try:
+			return obj == self._ti.rootNVDAObject
+		except Exception:
+			return False
+
+	def _nodeInfo(self, obj):
+		"""(buffer range, element) of the nearest element, from obj upwards, that the buffer
+		knows as a node; None if none within reach."""
+		o = obj
+		for _ in range(MAX_ANCESTORS):
+			if o is None:
+				return None
+			try:
+				return self._ti.makeTextInfo(o), o
+			except LookupError:
+				pass
+			except Exception:
+				log.debugWarning("mouseReader: buffer lookup failed", exc_info=True)
+				return None
+			try:
+				o = o.parent
+			except Exception:
+				return None
+		return None
+
+	def _paragraph(self, info):
+		"""The buffer paragraph at the start of info, or None when it is empty."""
+		info = info.copy()
+		info.collapse()
+		info.expand(textInfos.UNIT_PARAGRAPH)
+		text = _clean(info.text)
+		if not text:
+			return None
+		bookmark = info.bookmark
+		return Unit((ocr.LEVEL_PARAGRAPH, bookmark.startOffset, bookmark.endOffset), text, info)
+
+	def _block(self, info, node):
+		"""The node one up from the paragraph's: a list, a section, a table cell, a PDF page
+		region. The paragraph itself when the next node up is the whole document."""
+		paragraph = self._paragraph(info)
+		if paragraph is None:
+			return None
+		o = node
+		for _ in range(4):
+			try:
+				o = o.parent
+			except Exception:
+				return paragraph
+			if o is None or self._isRoot(o):
+				return paragraph
+			try:
+				outer = self._ti.makeTextInfo(o)
+			except LookupError:
+				continue
+			except Exception:
+				return paragraph
+			inner = paragraph.info
+			startCmp = outer.compareEndPoints(inner, "startToStart")
+			endCmp = outer.compareEndPoints(inner, "endToEnd")
+			if startCmp <= 0 and endCmp >= 0:
+				if startCmp == 0 and endCmp == 0:
+					continue  # the same text, one wrapper up; keep looking for something bigger
+				text = _clean(outer.text)
+				if text:
+					bookmark = outer.bookmark
+					return Unit((ocr.LEVEL_BLOCK, bookmark.startOffset, bookmark.endOffset), text, outer)
+		return paragraph
+
+	def _line(self, x, y, obj):
+		"""The visual line of the element under the point, as the app reports it."""
+		try:
+			info = obj.makeTextInfo(textInfos.Point(x, y))
+			info.expand(textInfos.UNIT_LINE)
+		except (NotImplementedError, LookupError, RuntimeError):
+			return None
+		except Exception:
+			log.debugWarning("mouseReader: line lookup failed", exc_info=True)
+			return None
+		text = _clean(info.text)
+		if not text:
+			return None
+		try:
+			start = info.bookmark.startOffset
+		except Exception:
+			start = 0
+		return Unit((ocr.LEVEL_LINE, self._identity(obj), start), text)
+
+	def _elementText(self, obj, level):
+		"""All the element's own text: for a text leaf hanging straight off the document root,
+		where the buffer has no smaller node to measure a paragraph in."""
+		try:
+			text = _clean(obj.makeTextInfo(textInfos.POSITION_ALL).text)
+		except Exception:
+			return None
+		if not text:
+			return None
+		return Unit((level, self._identity(obj)), text)
+
+	def unitAt(self, x, y, level, obj):
+		"""The unit under the pointer at the level, or None over blank space or a control."""
+		if not self.inDocument(obj) or not _isText(obj):
+			return None
+		if level == ocr.LEVEL_LINE:
+			return self._line(x, y, obj)
+		ident = self._identity(obj)
+		cacheKey = (level, ident) if ident is not None else None
+		if cacheKey is not None and cacheKey in self._cache:
+			return self._cache[cacheKey]
+		found = self._nodeInfo(obj)
+		if found is None:
+			return None
+		info, node = found
+		if self._isRoot(node):
+			unit = self._elementText(obj, level)
+		elif level == ocr.LEVEL_BLOCK:
+			unit = self._block(info, node)
+		else:
+			unit = self._paragraph(info)
+		if cacheKey is not None and unit is not None:
+			self._cache[cacheKey] = unit
+		return unit
+
+	def unitNear(self, x, y, level, obj):
+		"""For a click: the unit under the point, else the first paragraph of the container
+		clicked (its padding, the gap under a heading); nothing for the document's own margins."""
+		unit = self.unitAt(x, y, level, obj)
+		if unit is not None:
+			return unit
+		if not self.inDocument(obj) or not _isContainer(obj):
+			return None
+		found = self._nodeInfo(obj)
+		if found is None or self._isRoot(found[1]):
+			return None
+		return self._paragraph(found[0])
+
+	# ---- speaking -------------------------------------------------------------------------
+
+	def _speak(self, unit):
+		self._lastSpoken = unit.key
+		ocr.speakLines([unit.text])
+
+	def speakAt(self, x, y, level, obj) -> bool:
+		"""For a click: read the unit under (or nearest) the point. False if there is none."""
+		unit = self.unitNear(x, y, level, obj)
+		if unit is None:
+			return False
+		self._speak(unit)
+		return True
+
+	def hover(self, x, y, level, obj=None) -> bool:
+		"""Read the unit under the pointer when it is a different one from the unit read last.
+		Blank space and the unit just read leave things alone. True when something was read."""
+		started = time.time()
+		unit = self.unitAt(x, y, level, obj)
+		lookupMs = int((time.time() - started) * 1000)
+		if lookupMs > SLOW_LOOKUP_MS:
+			log.info("mouseReader: finding the text under the mouse took %d ms" % lookupMs)
+		if unit is None or unit.key == self._lastSpoken:
+			return False
+		self._speak(unit)
+		return True
+
+	def _isFocused(self) -> bool:
+		"""Is this the document with the system focus, in browse mode? Then reading on can move
+		the browse-mode caret, which brings the page along as it reads."""
+		try:
+			ti = api.getFocusObject().treeInterceptor
+			return ti is self._ti and not ti.passThrough
+		except Exception:
+			return False
+
+	def readAllFrom(self, x, y, level, obj=None) -> bool:
+		"""Start NVDA's Say All at the paragraph under (or nearest) the point: from the browse-mode
+		caret when this document has focus, so the page scrolls along; else from the review
+		cursor, without touching the caret. False if there is nothing to read from."""
+		if obj is None:
+			obj = objectAt(x, y)
+		unit = self.unitNear(x, y, ocr.LEVEL_PARAGRAPH, obj)
+		if unit is None or unit.info is None:
+			return False
+		start = unit.info.copy()
+		start.collapse()
+		try:
+			speech.cancelSpeech()
+			speech.pauseSpeech(False)  # shift in NVDA+shift+click can leave the voice paused
+			focused = self._isFocused()
+			if focused:
+				self._ti.selection = start
+				sayAll.SayAllHandler.readText(sayAll.CURSOR.CARET, startedFromScript=True)
+			else:
+				if not api.setReviewPosition(start, clearNavigatorObject=True):
+					return False
+				sayAll.SayAllHandler.readText(sayAll.CURSOR.REVIEW, startedFromScript=True)
+			self._lastSpoken = unit.key
+			log.info("mouseReader: reading on through the document from the %s" % ("caret" if focused else "review cursor"))
+			return True
+		except Exception:
+			log.exception("mouseReader: could not start reading on through the document")
+			return False

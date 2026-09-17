@@ -153,11 +153,11 @@ class Reader:
 
 	# ---- hover ------------------------------------------------------------------------
 
-	def onMouseMove(self, x: int, y: int) -> bool:
-		"""Every mouse move NVDA reports (after any delay add-on has had its say). True when a
-		fresh snapshot covers the point: it has read the paragraph there, or deliberately stayed
-		quiet (same paragraph, blank space), and NVDA's own mouse tracking should stay out so
-		the whole window behaves the same way."""
+	def onMouseMove(self, x: int, y: int, obj=None) -> bool:
+		"""Every mouse move NVDA reports (after any delay add-on has had its say), with the object
+		NVDA found under the pointer. True when a fresh snapshot covers the point: it has read
+		the paragraph there, or deliberately stayed quiet (same paragraph, blank space), and
+		NVDA's own mouse tracking should stay out so the whole window behaves the same way."""
 		if not self._settings.enabled():
 			return False
-		return self._ocr.claim(x, y)
+		return self._ocr.claim(x, y, obj)
