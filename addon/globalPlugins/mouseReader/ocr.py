@@ -162,7 +162,11 @@ def _overlap(aLeft, aRight, bLeft, bRight):
 
 # A line that starts with one of these, or with a numbering like "1." "2)" "(3)" "a." "iv.",
 # is a list item and starts a paragraph of its own.
-_BULLETS = frozenset("•·▪▫◦‣⁃●○■□◆◇➢➤►▶-–—*»>")
+_BULLETS = frozenset("•·▪▫◦‣⁃●○■□◆◇➢➤►▶-–—*»>.°º")  # "." and "°": what OCR makes of a bullet dot
+# A line ending before this fraction of its column's width is the last line of something (a
+# list item, a short paragraph); the next line starts a new paragraph. Wrapped lines fill the
+# width, so they are left alone.
+SHORT_LINE_FRACTION = 0.75
 _NUMBERING = re.compile(r"^\(?(\d{1,3}|[a-zA-Z]|[ivxlcIVXLC]{1,5})[.)]$")
 # A line ending like this ends a sentence; if the next line then starts like a new sentence
 # (capital, digit, opening quote or bracket) the line break is a paragraph break.
@@ -214,6 +218,12 @@ def groupUnits(data, level):
 	if not lines:
 		return []
 	lines.sort(key=lambda line: (line["top"], line["left"]))
+	# The right edge of each line's column: the furthest right of the lines it overlaps
+	# horizontally, so a short line can be told from a full one.
+	for line in lines:
+		line["columnRight"] = max(
+			other["right"] for other in lines if _overlap(line["left"], line["right"], other["left"], other["right"]) > 0
+		)
 	heights = sorted(line["bottom"] - line["top"] for line in lines)
 	typical = heights[len(heights) // 2] or 1
 	# The typical line pitch (top to top of consecutive, horizontally overlapping lines) is a
@@ -239,13 +249,17 @@ def groupUnits(data, level):
 			overlap = _overlap(line["left"], line["right"], p["left"], p["right"])
 			if overlap > bestOverlap:
 				best, bestOverlap = p, overlap
-		if best is not None and level == LEVEL_PARAGRAPH and breaksAfter(best["lines"][-1], line["words"]):
-			best = None
+		if best is not None and level == LEVEL_PARAGRAPH:
+			shortLast = best["lastRight"] < best["columnRight"] * SHORT_LINE_FRACTION
+			if shortLast or breaksAfter(best["lines"][-1], line["words"]):
+				best = None
 		if best is None:
-			paragraphs.append(dict(line, lines=[line["words"]], lastTop=line["top"]))
+			paragraphs.append(dict(line, lines=[line["words"]], lastTop=line["top"], lastRight=line["right"]))
 			continue
 		best["lines"].append(line["words"])
 		best["lastTop"] = max(best["lastTop"], line["top"])
+		best["lastRight"] = line["right"]
+		best["columnRight"] = max(best["columnRight"], line["columnRight"])
 		best["bottom"] = max(best["bottom"], line["bottom"])
 		best["left"] = min(best["left"], line["left"])
 		best["right"] = max(best["right"], line["right"])
