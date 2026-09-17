@@ -276,11 +276,22 @@ def groupUnits(data, level):
 			if startsItem(line["words"]):
 				best = None  # a new list item, whatever came before
 			elif best["isItem"]:
-				# Inside a numbered or bulleted item. Its continuation lines sit at the item's text
-				# edge (a hanging indent: the marker is further left), and they join it whatever
-				# they start with; only a line that steps back out to the margin ends the item.
-				if line["left"] < best["contentLeft"] - typical * 0.6:
+				# Inside a numbered or bulleted item. Two layouts:
+				# - hanging indent: continuation lines sit at the item's text edge, right of the
+				#   marker. Unambiguous, so they join whatever they start with;
+				# - flush: continuation lines start at the marker's own edge, where a following
+				#   paragraph would start too, so the ordinary rules decide (a short last line, or
+				#   a sentence end followed by a sentence start, ends the item).
+				# A line further left than the marker has left the list altogether.
+				if line["left"] >= best["contentLeft"] - typical * 0.6:
+					pass  # hanging continuation
+				elif line["left"] < best["itemLeft"] - typical * 0.6:
 					best = None
+				else:
+					shortLast = best["lastRight"] < best["columnRight"] * SHORT_LINE_FRACTION
+					shortish = best["lastRight"] < best["columnRight"] * CAPITAL_AFTER_SHORT_FRACTION
+					if shortLast or breaksAfter(best["lines"][-1], line["words"], previousShort=shortish):
+						best = None
 			else:
 				shortLast = best["lastRight"] < best["columnRight"] * SHORT_LINE_FRACTION
 				shortish = best["lastRight"] < best["columnRight"] * CAPITAL_AFTER_SHORT_FRACTION
@@ -292,7 +303,7 @@ def groupUnits(data, level):
 			isItem = level == LEVEL_PARAGRAPH and startsItem(words)
 			# Where the item's text starts: after the marker word, if the marker is its own word.
 			contentLeft = words[1]["x"] if isItem and len(words) > 1 and (words[0]["text"] in _BULLETS or _NUMBERING.match(words[0]["text"])) else line["left"]
-			paragraphs.append(dict(line, lines=[words], lastTop=line["top"], lastRight=line["right"], lastLeft=line["left"], isItem=isItem, contentLeft=contentLeft))
+			paragraphs.append(dict(line, lines=[words], lastTop=line["top"], lastRight=line["right"], lastLeft=line["left"], isItem=isItem, contentLeft=contentLeft, itemLeft=line["left"]))
 			continue
 		best["lines"].append(line["words"])
 		best["lastTop"] = max(best["lastTop"], line["top"])
