@@ -15,11 +15,14 @@ nearest element from there upwards that the buffer knows as a node (text leaves 
 into their parent's text), then the buffer paragraph that node begins. No UIA, and nothing
 that was not already happening on every mouse move with tracking on.
 
-Asking twice. Chromium answers "what is under this point?" from a cached guess the first time
-it is asked about a point, and works out the exact answer in the background, ready for the
-next ask at the same point. In a web page the guess is usually right; inside the PDF viewer
-it is often just "the PDF". So when the first answer is a container, the point is asked
-about again a moment later, and the mouse resting on a spot asks again too.
+Asking twice, then walking down. Chromium answers "what is under this point?" from a cached
+guess the first time it is asked about a point, and works out the exact answer in the
+background, ready for the next ask at the same point; so a container answer is asked about
+again, and the mouse resting on a spot asks again too. Inside Chrome's PDF viewer, though,
+every answer is the box that holds the PDF (a section with one child): the hit test never
+goes inside until the browse caret has been moved in there by keyboard. The elements inside
+still know their own rectangles, so from that box the add-on walks down itself: which child
+holds the point, then which of its children, until it reaches a paragraph.
 
 Levels. Paragraph is the buffer's paragraph (a <p>, a list item, a heading, a PDF paragraph).
 Line is the visual line of the element under the pointer, as the app reports it. Block is
@@ -63,6 +66,10 @@ REST_MS = 200
 REST_PX = 4
 # Hover misses logged per snapshot, so the log shows what Chromium answered without flooding.
 HOVER_LOG_LIMIT = 8
+# How many levels down to walk by rectangles from the container the app stopped at, and how
+# many of those walks to log per snapshot.
+MAX_DESCENT = 10
+DESCENT_LOG_LIMIT = 4
 
 # Roles whose element, or whose text leaf, counts as text under the pointer. Anything else with
 # children is a container (blank space); anything else without children is a control.
@@ -159,6 +166,26 @@ def _isContainer(obj) -> bool:
 		return False
 
 
+def _contains(loc, x, y) -> bool:
+	try:
+		return (
+			loc is not None
+			and loc.width > 0
+			and loc.height > 0
+			and loc.left <= x < loc.left + loc.width
+			and loc.top <= y < loc.top + loc.height
+		)
+	except Exception:
+		return False
+
+
+def _rectText(loc) -> str:
+	try:
+		return "%d,%d %dx%d" % (loc.left, loc.top, loc.width, loc.height)
+	except Exception:
+		return "no rect"
+
+
 class Unit:
 	"""One reading unit of the document: what to say, and where it is (info: the buffer range;
 	None for a line, which is measured in the element rather than the buffer)."""
@@ -185,6 +212,8 @@ class DocumentSnapshot(ocr.WindowSnapshot):
 		self._restAt = None  # (x, y, level) of the last container answer
 		self._closed = False
 		self._hoverLogs = 0
+		self._descentLogs = 0
+		self._rects = {}  # element id -> [(rectangle, child)], until the document scrolls
 
 	@property
 	def kind(self) -> str:
@@ -207,6 +236,11 @@ class DocumentSnapshot(ocr.WindowSnapshot):
 			return bool(self._ti.isAlive)
 		except Exception:
 			return False
+
+	def scrolled(self):
+		"""The wheel turned over the document: its elements have moved, so their rectangles are
+		fetched afresh next time."""
+		self._rects.clear()
 
 	# ---- what the pointer is over ----------------------------------------------------------
 
@@ -357,17 +391,84 @@ class DocumentSnapshot(ocr.WindowSnapshot):
 			self._cache[cacheKey] = unit
 		return unit
 
+	def _childRects(self, obj, refresh=False):
+		"""[(screen rectangle, child)] for the children of obj, remembered until a scroll."""
+		ident = self._identity(obj)
+		if not refresh and ident is not None and ident in self._rects:
+			return self._rects[ident]
+		rects = []
+		try:
+			children = obj.children
+		except Exception:
+			children = []
+		for child in children:
+			try:
+				loc = child.location
+			except Exception:
+				loc = None
+			rects.append((loc, child))
+		if ident is not None:
+			self._rects[ident] = rects
+		return rects
+
+	def _descend(self, obj, x, y, trail=None):
+		"""From a container the app's hit test stopped at, walk down by the children's own screen
+		rectangles to the deepest element under the point. A child that is text wins over one
+		that is not; a sole child is entered whatever its rectangle says (it fills its parent);
+		rectangles that place no child under the point are fetched once more in case the
+		document moved without the wheel. Returns the deepest element reached (obj itself if
+		nothing under the point)."""
+		current = obj
+		for _ in range(MAX_DESCENT):
+			if _isText(current) and not _isContainer(current):
+				break
+			rects = self._childRects(current)
+			hit = hitLoc = None
+			for attempt in range(2):
+				for loc, child in rects:
+					if _contains(loc, x, y):
+						hit, hitLoc = child, loc
+						if _isText(child):
+							break
+				if hit is not None or attempt == 1:
+					break
+				if len(rects) == 1:
+					hitLoc, hit = rects[0]
+					if trail is not None:
+						trail.append("(sole child, entered anyway)")
+					break
+				rects = self._childRects(current, refresh=True)
+			if hit is None:
+				if trail is not None:
+					trail.append("none of %d children holds the point: %s" % (len(rects), ", ".join("%s %s" % (describe(c), _rectText(l)) for l, c in rects[:6])))
+				break
+			if trail is not None:
+				trail.append("%s %s" % (describe(hit), _rectText(hitLoc)))
+			current = hit
+		return current
+
 	def unitAtSecondAsk(self, x, y, level, obj):
-		"""The unit under the pointer, asking the app again about the point when the element NVDA
-		found there is a container: the second answer is the exact one (see the module note).
-		Returns (unit, element the unit came from)."""
+		"""The unit under the pointer. When the element NVDA found there is a container, the app
+		is asked about the point again (the second answer is the exact one, see the module note);
+		when that is a container too, the add-on walks down by rectangles from it. Returns
+		(unit, element the unit came from)."""
 		unit = self.unitAt(x, y, level, obj)
 		if unit is not None or not self.inDocument(obj) or not _isContainer(obj):
 			return unit, obj
 		again = objectAt(x, y)
-		if again is None or again is obj:
-			return None, obj
-		return self.unitAt(x, y, level, again), again
+		if again is not None and again is not obj and _isText(again):
+			unit = self.unitAt(x, y, level, again)
+			if unit is not None:
+				return unit, again
+		top = again if (again is not None and _isContainer(again)) else obj
+		trail = [] if self._descentLogs < DESCENT_LOG_LIMIT else None
+		deep = self._descend(top, x, y, trail)
+		if trail is not None:
+			self._descentLogs += 1
+			log.info("mouseReader: walked down from %s: %s" % (describe(top), " > ".join(trail) if trail else "nowhere"))
+		if deep is not None and deep is not top and _isText(deep):
+			return self.unitAt(x, y, level, deep), deep
+		return None, deep if deep is not None else obj
 
 	# ---- speaking -------------------------------------------------------------------------
 

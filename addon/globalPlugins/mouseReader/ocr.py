@@ -741,8 +741,11 @@ class OcrReader:
 		"""Main thread. The wheel turned at the point; if that is over the recognised window,
 		recognise it again once the wheel has been quiet for a moment."""
 		snapshot = self.snapshot
-		if snapshot is None or snapshot.live or not snapshot.contains(x, y):
-			return  # a document answers each hover itself, scrolled or not
+		if snapshot is None or not snapshot.contains(x, y):
+			return
+		if snapshot.live:
+			snapshot.scrolled()  # a document answers each hover itself; only its rectangles need refreshing
+			return
 		found = windowAt(x, y)
 		if found is None or found[0] != snapshot.hwnd:
 			return
