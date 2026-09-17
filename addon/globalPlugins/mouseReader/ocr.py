@@ -174,22 +174,37 @@ _SENTENCE_END = re.compile(r"[.!?:;…]['\"\u201d\u2019)\]]*$")
 _SENTENCE_START = frozenset("\"\u201c\u2018'([")
 
 
+# A line ending before this fraction of its column's width, when the next line starts like a
+# sentence, is the end of a list item or paragraph even without punctuation: wrapped text
+# fills the width and carries on in lowercase.
+CAPITAL_AFTER_SHORT_FRACTION = 0.9
+
+
 def startsItem(words) -> bool:
 	first = words[0]["text"]
-	return first in _BULLETS or bool(_NUMBERING.match(first))
+	if first in _BULLETS or bool(_NUMBERING.match(first)):
+		return True
+	if len(first) > 1 and first[0] in _BULLETS and first[1:2].isalnum():
+		return True  # the bullet glued onto the first word: "•Restore"
+	# What OCR makes of a hollow or small bullet, when the line goes on: "o Bring questions".
+	return first in ("o", "O", "0") and len(words) > 1
 
 
-def breaksAfter(previousWords, words) -> bool:
+def _startsSentence(words) -> bool:
+	ch = words[0]["text"][0]
+	return ch.isupper() or ch.isdigit() or ch in _SENTENCE_START
+
+
+def breaksAfter(previousWords, words, previousShort=False) -> bool:
 	"""Should the line `words` start a new paragraph rather than join the one ending with
-	`previousWords`? True for a list item, and for a sentence end followed by a sentence start."""
+	`previousWords`? True for a list item; for a sentence end followed by a sentence start;
+	and for a sentence start after a line that ended short of the width (previousShort)."""
 	if startsItem(words):
 		return True
-	last = previousWords[-1]["text"]
-	first = words[0]["text"]
-	if not _SENTENCE_END.search(last):
+	if not _startsSentence(words):
 		return False
-	ch = first[0]
-	return ch.isupper() or ch.isdigit() or ch in _SENTENCE_START
+	last = previousWords[-1]["text"]
+	return bool(_SENTENCE_END.search(last)) or previousShort
 
 
 def groupUnits(data, level):
@@ -251,14 +266,17 @@ def groupUnits(data, level):
 				best, bestOverlap = p, overlap
 		if best is not None and level == LEVEL_PARAGRAPH:
 			shortLast = best["lastRight"] < best["columnRight"] * SHORT_LINE_FRACTION
-			if shortLast or breaksAfter(best["lines"][-1], line["words"]):
+			shortish = best["lastRight"] < best["columnRight"] * CAPITAL_AFTER_SHORT_FRACTION
+			indented = abs(line["left"] - best["lastLeft"]) > typical  # a list under its intro line, or back out of it
+			if shortLast or indented or breaksAfter(best["lines"][-1], line["words"], previousShort=shortish):
 				best = None
 		if best is None:
-			paragraphs.append(dict(line, lines=[line["words"]], lastTop=line["top"], lastRight=line["right"]))
+			paragraphs.append(dict(line, lines=[line["words"]], lastTop=line["top"], lastRight=line["right"], lastLeft=line["left"]))
 			continue
 		best["lines"].append(line["words"])
 		best["lastTop"] = max(best["lastTop"], line["top"])
 		best["lastRight"] = line["right"]
+		best["lastLeft"] = line["left"]
 		best["columnRight"] = max(best["columnRight"], line["columnRight"])
 		best["bottom"] = max(best["bottom"], line["bottom"])
 		best["left"] = min(best["left"], line["left"])

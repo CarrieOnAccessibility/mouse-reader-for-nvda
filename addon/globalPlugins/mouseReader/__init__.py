@@ -100,6 +100,10 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 
 	def __init__(self):
 		super().__init__()
+		try:
+			log.info("mouseReader %s loaded" % addonHandler.getCodeAddon().version)
+		except Exception:
+			pass
 		self.settings = Settings()
 		self.reader = reader.Reader(self.settings)
 		self.hook = hook.MouseHook()
