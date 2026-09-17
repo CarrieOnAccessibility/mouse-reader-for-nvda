@@ -61,6 +61,14 @@ LEVEL_PARAGRAPH = "paragraph"
 LEVEL_BLOCK = "block"
 LEVELS = (LEVEL_LINE, LEVEL_PARAGRAPH, LEVEL_BLOCK)
 
+# Where the text comes from: the page's own text when it has paragraphs, else OCR; or OCR only.
+SOURCE_AUTO = "auto"
+SOURCE_OCR = "ocr"
+SOURCES = (SOURCE_AUTO, SOURCE_OCR)
+# A window whose text turned out to have no paragraph structure is read with OCR for this long
+# before its text is tried again.
+UNSTRUCTURED_MEMORY_SECONDS = 600
+
 PW_RENDERFULLCONTENT = 0x00000002
 SNAPSHOT_LIFETIME_SECONDS = 180
 # After the wheel stops turning over a recognised window, recognise it again this much later.
@@ -530,11 +538,14 @@ def buildSnapshot(hwnd, rect, data):
 class OcrReader:
 	"""Runs the recognition for a click or the wheel; keeps the snapshot for hovering."""
 
-	def __init__(self, levelFunc, beepFunc=None):
+	def __init__(self, levelFunc, beepFunc=None, sourceFunc=None):
 		"""levelFunc: callable returning the current level (LEVEL_LINE / _PARAGRAPH / _BLOCK).
-		beepFunc: callable returning whether a beep should mark each OCR recognition."""
+		beepFunc: callable returning whether a beep should mark each OCR recognition.
+		sourceFunc: callable returning SOURCE_AUTO or SOURCE_OCR."""
 		self._level = levelFunc
 		self._beep = beepFunc or (lambda: False)
+		self._source = sourceFunc or (lambda: SOURCE_AUTO)
+		self._unstructured = {}  # hwnd -> time its text was found to have no paragraph structure
 		self.snapshot = None
 		self._pending = None  # recognizer of a recognition still in flight
 		self._wheelTimer = None
@@ -579,7 +590,7 @@ class OcrReader:
 			return False
 		hwnd, rect = found
 		self._request += 1
-		if allowDocument and self._startDocument(x, y, quiet, readAllAfter):
+		if allowDocument and self._source() == SOURCE_AUTO and self._startDocument(x, y, quiet, readAllAfter, hwnd=hwnd):
 			return True
 		return self._startOcr(x, y, hwnd, rect, quiet, readAllAfter)
 
@@ -639,13 +650,16 @@ class OcrReader:
 			ui.message(_("OCR is not available"))
 		return True
 
-	def _startDocument(self, x: int, y: int, quiet: bool, readAllAfter: bool, waiting=None, waited: int = 0) -> bool:
+	def _startDocument(self, x: int, y: int, quiet: bool, readAllAfter: bool, waiting=None, waited: int = 0, hwnd=None) -> bool:
 		"""If the point is in a browse-mode document, let the document answer the mouse (no OCR)
 		and read what is under the point now. While NVDA is still building its copy of the page,
 		look again shortly (OCR takes over if it never finishes). False when there is no such
-		document."""
+		document, or when the document's text turned out to have no paragraph structure (then
+		the window is read with OCR for a while)."""
 		from . import document
 
+		if hwnd is not None and time.time() - self._unstructured.get(hwnd, 0) < UNSTRUCTURED_MEMORY_SECONDS:
+			return False
 		try:
 			found = document.documentAt(x, y, build=waiting is None, known=waiting.ti if waiting is not None else None)
 		except Exception:
@@ -676,16 +690,23 @@ class OcrReader:
 		log.info("mouseReader: document under the mouse (%s); reading from it, no OCR" % snapshot.kind)
 		level = self._level()
 		if readAllAfter:
-			if not snapshot.readAllFrom(x, y, level, obj):
-				ui.message(NO_TEXT_UNDER_MOUSE)
-			return True
-		if quiet:
+			done = snapshot.readAllFrom(x, y, level, obj)
+		elif quiet:
 			if not isReadingAll():
 				cx, cy = winUser.getCursorPos()
 				if snapshot.covers(cx, cy):
 					snapshot.hover(cx, cy, level, document.objectAt(cx, cy))
 			return True
-		if not snapshot.speakAt(x, y, level, obj):
+		else:
+			done = snapshot.speakAt(x, y, level, obj)
+		if not done:
+			if snapshot.unstructured:
+				# A text layer of placed snippets with no paragraphs (a pdf.js viewer, say): the
+				# picture is the better source for this window, for a while.
+				log.info("mouseReader: the page's text has no paragraph structure here; using OCR for this window")
+				self._unstructured[snapshot.hwnd] = time.time()
+				self._setSnapshot(None)
+				return False
 			ui.message(NO_TEXT_UNDER_MOUSE)  # a control or the bare margin: nothing to ask again about
 		return True
 
@@ -694,12 +715,12 @@ class OcrReader:
 		or give up and recognise the window instead."""
 		if request != self._request:
 			return  # a newer click or scroll has taken over
-		if self._startDocument(x, y, quiet, readAllAfter, waiting=waiting, waited=waited):
-			return
 		found = windowAt(x, y)
 		if found is None:
 			return
 		hwnd, rect = found
+		if self._startDocument(x, y, quiet, readAllAfter, waiting=waiting, waited=waited, hwnd=hwnd):
+			return
 		self._startOcr(x, y, hwnd, rect, quiet, readAllAfter)
 
 	def _onResult(self, recognizer, hwnd, rect, result, x, y, quiet, readAllAfter=False):

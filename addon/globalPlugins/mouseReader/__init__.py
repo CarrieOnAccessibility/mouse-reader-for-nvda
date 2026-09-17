@@ -43,10 +43,18 @@ LEVEL_CHOICES = (
 	(ocr.LEVEL_BLOCK, _("Block (a whole message or section)")),
 )
 
+SOURCE_CHOICES = (
+	# Translators: a text source: the page's own text when it has paragraphs, otherwise OCR.
+	(ocr.SOURCE_AUTO, _("Automatic (the page's own text when it has paragraphs, otherwise OCR)")),
+	# Translators: a text source: always OCR.
+	(ocr.SOURCE_OCR, _("OCR only")),
+)
+
 config.conf.spec[CONF_SECTION] = {
 	"enabled": "boolean(default=True)",
 	"hoverLevel": "option(%s, default='%s')" % (", ".join("'%s'" % key for key, _label in LEVEL_CHOICES), ocr.LEVEL_PARAGRAPH),
 	"beepOnOcr": "boolean(default=True)",
+	"source": "option(%s, default='%s')" % (", ".join("'%s'" % key for key, _label in SOURCE_CHOICES), ocr.SOURCE_AUTO),
 }
 
 
@@ -62,6 +70,10 @@ class Settings:
 
 	def beepOnOcr(self) -> bool:
 		return bool(config.conf[CONF_SECTION]["beepOnOcr"])
+
+	def source(self) -> str:
+		source = config.conf[CONF_SECTION]["source"]
+		return source if source in ocr.SOURCES else ocr.SOURCE_AUTO
 
 
 # Translators: the text of the "How to use" window.
@@ -95,6 +107,13 @@ def levelLabel(level) -> str:
 		if key == level:
 			return label
 	return level
+
+
+def sourceLabel(source) -> str:
+	for key, label in SOURCE_CHOICES:
+		if key == source:
+			return label
+	return source
 
 
 class HowToUseDialog(wx.Dialog):
@@ -150,6 +169,15 @@ class MouseReaderSettingsPanel(SettingsPanel):
 		keys = [key for key, _label in LEVEL_CHOICES]
 		current = section["hoverLevel"]
 		self.levelChoice.SetSelection(keys.index(current) if current in keys else 1)
+		self.sourceChoice = sHelper.addLabeledControl(
+			# Translators: label of the dropdown that picks where the text comes from.
+			_("&Read text from:"),
+			wx.Choice,
+			choices=[label for _key, label in SOURCE_CHOICES],
+		)
+		sourceKeys = [key for key, _label in SOURCE_CHOICES]
+		currentSource = section["source"]
+		self.sourceChoice.SetSelection(sourceKeys.index(currentSource) if currentSource in sourceKeys else 0)
 		self.beepCheckBox = sHelper.addItem(
 			# Translators: label of the check box that plays a short beep whenever a window is recognised with OCR.
 			wx.CheckBox(self, label=_("Play a &beep when OCR is used"))
@@ -180,6 +208,7 @@ class MouseReaderSettingsPanel(SettingsPanel):
 		config.conf[CONF_SECTION]["enabled"] = self.enabledCheckBox.IsChecked()
 		config.conf[CONF_SECTION]["hoverLevel"] = LEVEL_CHOICES[self.levelChoice.GetSelection()][0]
 		config.conf[CONF_SECTION]["beepOnOcr"] = self.beepCheckBox.IsChecked()
+		config.conf[CONF_SECTION]["source"] = SOURCE_CHOICES[self.sourceChoice.GetSelection()][0]
 
 
 class GlobalPlugin(globalPluginHandler.GlobalPlugin):
@@ -259,6 +288,19 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 		config.conf[CONF_SECTION]["hoverLevel"] = nextLevel
 		# Translators: reported when the hover level changes; {level} is Line, Paragraph or Block.
 		ui.message(_("Hover reads: {level}").format(level=levelLabel(nextLevel)))
+
+	@script(
+		# Translators: description of the command that switches between the page's own text and OCR only (no key by default).
+		description=_("Switches where Mouse Reader gets its text: automatic (the page's own text when it has paragraphs) or OCR only"),
+	)
+	def script_cycleSource(self, gesture):
+		keys = [key for key, _label in SOURCE_CHOICES]
+		current = self.settings.source()
+		nextSource = keys[(keys.index(current) + 1) % len(keys)]
+		config.conf[CONF_SECTION]["source"] = nextSource
+		self.reader.forget("source changed")
+		# Translators: reported when the text source changes; {source} is Automatic or OCR only.
+		ui.message(_("Read text from: {source}").format(source=_("Automatic") if nextSource == ocr.SOURCE_AUTO else sourceLabel(nextSource)))
 
 	@script(
 		# Translators: description of the command that reads on from the mouse position.

@@ -109,6 +109,13 @@ _PARAGRAPH_ROLES = frozenset(
 )
 # How many resolved boxes (element rectangle -> unit) a snapshot remembers for cheap hovering.
 RECENT_BOXES = 16
+# A buffer "paragraph" this long, and this many times longer than the text leaf under the
+# pointer, is not a paragraph: the page's text has no structure there (a text layer of placed
+# snippets), and OCR is the better source.
+UNSTRUCTURED_MIN_CHARS = 400
+UNSTRUCTURED_RATIO = 5
+# A container with more children than this is not walked (a pdf.js text layer has hundreds).
+MAX_WALK_CHILDREN = 250
 
 
 def objectAt(x: int, y: int):
@@ -441,6 +448,13 @@ class Unit:
 		self.rect = rect
 
 
+class Unstructured:
+	"""The page's text has no paragraph structure where the pointer is."""
+
+
+UNSTRUCTURED = Unstructured()
+
+
 class ItemSet:
 	"""A paragraph element that is really a list: its items, each with the lines it spans, so
 	the item under the pointer can be picked by the pointer's height within the element's box
@@ -488,6 +502,7 @@ class DocumentSnapshot(ocr.WindowSnapshot):
 		self._rects = {}  # element id -> [(rectangle, child)], until the document scrolls
 		self._recent = []  # [(rectangle, level, unit)] resolved lately, until the document scrolls
 		self._via = ""  # how the last lookup found its answer, for the log
+		self.unstructured = False  # set when the text under the pointer proved to have no paragraphs
 
 	@property
 	def kind(self) -> str:
@@ -692,6 +707,14 @@ class DocumentSnapshot(ocr.WindowSnapshot):
 		text = _clean(para.text)
 		if not text:
 			return None
+		if leaf is not None and len(text) >= UNSTRUCTURED_MIN_CHARS:
+			try:
+				leafText = _clean(leaf.name or leaf.makeTextInfo(textInfos.POSITION_ALL).text)
+			except Exception:
+				leafText = ""
+			if len(text) > UNSTRUCTURED_RATIO * max(len(leafText), 1):
+				log.info("mouseReader: the paragraph round %r would be %d characters: no paragraph structure here" % (leafText[:40], len(text)))
+				return UNSTRUCTURED
 		bookmark = para.bookmark
 		return Unit((ocr.LEVEL_PARAGRAPH, bookmark.startOffset, bookmark.endOffset), text, para)
 
@@ -699,8 +722,8 @@ class DocumentSnapshot(ocr.WindowSnapshot):
 		"""The node one up from the paragraph's: a list, a section, a table cell, a PDF page
 		region. The paragraph itself when the next node up is the whole document."""
 		paragraph = self._paragraph(info, node, leaf)
-		if paragraph is None:
-			return None
+		if paragraph is None or paragraph is UNSTRUCTURED:
+			return paragraph
 		if isinstance(paragraph, ItemSet):
 			inner = info
 			paragraph = paragraph.pick(y, rect)
@@ -789,6 +812,9 @@ class DocumentSnapshot(ocr.WindowSnapshot):
 				unit = self._paragraph(info, node, obj)
 			if cacheKey is not None and unit is not None:
 				self._cache[cacheKey] = unit
+		if unit is UNSTRUCTURED:
+			self.unstructured = True
+			return None
 		if isinstance(unit, ItemSet):
 			return unit.pick(y, rect if rect is not None else _location(obj))
 		return unit
@@ -800,9 +826,17 @@ class DocumentSnapshot(ocr.WindowSnapshot):
 			return self._rects[ident]
 		rects = []
 		try:
-			children = obj.children
+			count = obj.childCount
 		except Exception:
+			count = 0
+		if count > MAX_WALK_CHILDREN:
+			log.info("mouseReader: not walking a container of %d children" % count)
 			children = []
+		else:
+			try:
+				children = obj.children
+			except Exception:
+				children = []
 		for child in children:
 			try:
 				loc = child.location
@@ -952,6 +986,8 @@ class DocumentSnapshot(ocr.WindowSnapshot):
 			self._speak(unit)
 			self._moveCaretTo(unit)
 			return True
+		if self.unstructured:
+			return False
 		if retry and self.inDocument(obj) and _isContainer(obj):
 			wx.CallLater(CLICK_RETRY_MS, self._retryClick, x, y, level)
 			return True
