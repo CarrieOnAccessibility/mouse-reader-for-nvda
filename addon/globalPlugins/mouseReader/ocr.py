@@ -32,7 +32,10 @@ mouse from the document itself, through the same snapshot shape. OCR is for ever
 """
 
 import ctypes
+import json
+import os
 import re
+import tempfile
 import time
 from ctypes import byref
 from ctypes.wintypes import POINT, RECT
@@ -77,6 +80,22 @@ WHEEL_RERECOGNIZE_MS = 500
 # before OCR takes over.
 DOCUMENT_POLL_MS = 150
 DOCUMENT_WAIT_MS = 4000
+# Development aid: the last OCR result (lines of words with their boxes) and the units made of
+# it are written here, so a layout can be replayed offline with dev/layout_test.py.
+OCR_DUMP_PATH = os.path.join(tempfile.gettempdir(), "mouseReader-last-ocr.json")
+
+
+def dumpOcr(data, x, y, snapshot):
+	try:
+		dump = {"point": [x, y], "lines": data}
+		if snapshot is not None:
+			dump["units"] = {level: [u.text for u in snapshot.units(level)] for level in LEVELS}
+		with open(OCR_DUMP_PATH, "w", encoding="utf-8") as f:
+			json.dump(dump, f, ensure_ascii=False, indent=1)
+	except Exception:
+		log.debugWarning("mouseReader: could not write the OCR dump", exc_info=True)
+
+
 # The short soft beep that marks a window being recognised with OCR (when the setting is on):
 # pitch, length, and volume out of 100 (NVDA's own beeps are 50).
 OCR_BEEP_HZ = 660
@@ -842,6 +861,7 @@ class OcrReader:
 		except Exception:
 			log.exception("mouseReader: could not build the snapshot")
 			snapshot = None
+		dumpOcr(result.data, x, y, snapshot)
 		if snapshot is None:
 			if not quiet:
 				# Translators: message when OCR found no text in the window under the mouse.
