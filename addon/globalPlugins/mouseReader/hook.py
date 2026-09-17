@@ -19,6 +19,8 @@ from logHandler import log
 WM_MOUSEMOVE = 0x0200
 WM_LBUTTONDOWN = 0x0201
 WM_LBUTTONUP = 0x0202
+WM_MOUSEWHEEL = 0x020A
+WM_MOUSEHWHEEL = 0x020E
 
 
 class MouseHook:
@@ -27,6 +29,7 @@ class MouseHook:
 		self._installed = False
 		self.onMove = None  # (x, y, injected) -> None
 		self.onButton = None  # (msg, x, y, injected) -> True to swallow
+		self.onWheel = None  # (x, y, injected) -> None
 		self._swallowNextUp = False
 
 	def install(self):
@@ -46,6 +49,7 @@ class MouseHook:
 		self._installed = False
 		self.onMove = None
 		self.onButton = None
+		self.onWheel = None
 		if winInputHook.mouseCallback == self._callback:
 			winInputHook.setCallbacks(mouse=self._forward)
 		else:
@@ -66,6 +70,9 @@ class MouseHook:
 			elif msg == WM_LBUTTONUP and self._swallowNextUp:
 				self._swallowNextUp = False
 				return False
+			elif msg in (WM_MOUSEWHEEL, WM_MOUSEHWHEEL):
+				if self.onWheel:
+					self.onWheel(x, y, injected)
 		except Exception:
 			log.exception("mouseReader: error in mouse hook handler")
 		if forward:

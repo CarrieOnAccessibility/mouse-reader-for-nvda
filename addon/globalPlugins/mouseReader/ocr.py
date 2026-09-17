@@ -37,6 +37,8 @@ from winBindings import gdi32, user32
 
 PW_RENDERFULLCONTENT = 0x00000002
 SNAPSHOT_LIFETIME_SECONDS = 180
+# After the wheel stops turning over a recognised window, recognise it again this much later.
+WHEEL_RERECOGNIZE_MS = 500
 # A gap between two OCR lines larger than this fraction of the typical line height starts a
 # new paragraph.
 PARAGRAPH_GAP_FACTOR = 0.6
@@ -371,11 +373,29 @@ class OcrReader:
 		self._owner = owner  # ReadFromHere: provides start unit and the session mode
 		self.snapshot = None
 		self._pending = None  # recognizer of an OCR still in flight
+		self._wheelTimer = None
+		self._wheelPos = None
 
-	def start(self, x: int, y: int, startUnit, readAfter: bool = True) -> bool:
+	def shutdown(self):
+		if self._wheelTimer is not None:
+			try:
+				self._wheelTimer.Stop()
+			except Exception:
+				pass
+			self._wheelTimer = None
+		if self._pending is not None:
+			try:
+				self._pending.cancel()
+			except Exception:
+				pass
+			self._pending = None
+
+	def start(self, x: int, y: int, startUnit, readAfter: bool = True, quiet: bool = False) -> bool:
 		"""Begin OCR of the window under the point. Returns False if there is nothing to OCR.
 		readAfter: start reading from the paragraph nearest the point once recognised;
-		otherwise just announce the result and leave the snapshot for hovering."""
+		otherwise just announce the result and leave the snapshot for hovering.
+		quiet: say nothing at all (a refresh after scrolling); afterwards the paragraph under
+		the pointer is read as a fresh hover unless a reading is in progress."""
 		try:
 			from contentRecog import uwpOcr
 		except Exception:
@@ -407,8 +427,9 @@ class OcrReader:
 		captureMs = int((time.time() - started) * 1000)
 		left, top, width, height = rect
 		imgInfo = _WindowImageInfo(left, top, width, height)
-		# Translators: reported while the window under the mouse is being OCRed.
-		ui.message(_("Recognizing"))
+		if not quiet:
+			# Translators: reported while the window under the mouse is being OCRed.
+			ui.message(_("Recognizing"))
 		log.info(
 			"mouseReader: OCR of window %s at %r (%s, captured in %d ms)"
 			% (hwnd, rect, "rendered by the window" if rendered else "screen photo", captureMs)
@@ -419,7 +440,7 @@ class OcrReader:
 		def onResult(result):
 			# Recogniser thread: hand over to the main thread.
 			log.info("mouseReader: OCR engine answered after %d ms" % int((time.time() - sent) * 1000))
-			queueHandler.queueFunction(queueHandler.eventQueue, self._onResult, recognizer, hwnd, rect, result, imgInfo, x, y, startUnit, readAfter)
+			queueHandler.queueFunction(queueHandler.eventQueue, self._onResult, recognizer, hwnd, rect, result, imgInfo, x, y, startUnit, readAfter, quiet)
 
 		try:
 			recognizer.recognize(pixels, imgInfo, onResult)
@@ -429,14 +450,15 @@ class OcrReader:
 			ui.message(_("OCR is not available"))
 		return True
 
-	def _onResult(self, recognizer, hwnd, rect, result, imgInfo, x, y, startUnit, readAfter):
+	def _onResult(self, recognizer, hwnd, rect, result, imgInfo, x, y, startUnit, readAfter, quiet=False):
 		if self._pending is not recognizer:
 			return  # superseded by a later click
 		self._pending = None
 		if isinstance(result, Exception):
 			log.error("mouseReader: recognition failed: %s" % result)
-			# Translators: message when Windows OCR fails.
-			ui.message(_("Recognition failed"))
+			if not quiet:
+				# Translators: message when Windows OCR fails.
+				ui.message(_("Recognition failed"))
 			return
 		try:
 			snapshot = buildSnapshot(hwnd, rect, result.data, imgInfo)
@@ -444,11 +466,26 @@ class OcrReader:
 			log.exception("mouseReader: could not build the OCR snapshot")
 			snapshot = None
 		if snapshot is None:
-			# Translators: message when OCR found no text in the window under the mouse.
-			ui.message(_("No text recognized"))
+			if not quiet:
+				# Translators: message when OCR found no text in the window under the mouse.
+				ui.message(_("No text recognized"))
 			return
 		self.snapshot = snapshot
 		log.info("mouseReader: OCR found %d paragraphs (%d lines)" % (len(snapshot.paragraphs), sum(len(p.lines) for p in snapshot.paragraphs)))
+		if quiet:
+			# A refresh after scrolling: what is under the pointer now is new, so read it, unless
+			# a reading is in progress (it carries on from the text it started with).
+			try:
+				if sayAll.SayAllHandler and sayAll.SayAllHandler.isRunning():
+					return
+			except Exception:
+				pass
+			import winUser
+
+			cx, cy = winUser.getCursorPos()
+			if snapshot.covers(cx, cy):
+				snapshot.hover(cx, cy)
+			return
 		if not readAfter:
 			# Translators: reported after a window has been recognised; {count} paragraphs were found.
 			ui.message(_("Recognized {count} paragraphs; hover to read them").format(count=len(snapshot.paragraphs)))
@@ -512,6 +549,36 @@ class OcrReader:
 		if snapshot is None:
 			return False
 		return snapshot.hover(x, y)
+
+	# ---- the wheel -----------------------------------------------------------------------
+
+	def wheelScrolled(self, x: int, y: int):
+		"""Main thread. The wheel turned at the point; if that is over the recognised window,
+		recognise it again once the wheel has been quiet for a moment."""
+		snapshot = self.snapshot
+		if snapshot is None or not snapshot.contains(x, y):
+			return
+		found = windowAt(x, y)
+		if found is None or found[0] != snapshot.hwnd:
+			return
+		self._wheelPos = (x, y)
+		if self._wheelTimer is None:
+			import wx
+
+			self._wheelTimer = wx.CallLater(WHEEL_RERECOGNIZE_MS, self._reRecognize)
+		else:
+			self._wheelTimer.Start(WHEEL_RERECOGNIZE_MS)
+
+	def _reRecognize(self):
+		pos = self._wheelPos
+		snapshot = self.snapshot
+		if pos is None or snapshot is None:
+			return
+		found = windowAt(*pos)
+		if found is None or found[0] != snapshot.hwnd:
+			return
+		log.info("mouseReader: wheel stopped; recognising the window again")
+		self.start(pos[0], pos[1], None, readAfter=False, quiet=True)
 
 	def forget(self):
 		self.snapshot = None

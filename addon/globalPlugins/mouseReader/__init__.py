@@ -111,6 +111,7 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 		self.readFrom = readfrom.ReadFromHere(self.settings)
 		self.hook = hook.MouseHook()
 		self.hook.onButton = self.readFrom.onButton
+		self.hook.onWheel = self.readFrom.onWheel
 		NVDASettingsDialog.categoryClasses.append(MouseReaderSettingsPanel)
 		try:
 			self.hook.install()
@@ -126,6 +127,10 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 			self.hook.uninstall()
 		except Exception:
 			log.exception("mouseReader: could not remove the mouse hook")
+		try:
+			self.readFrom.shutdown()
+		except Exception:
+			log.exception("mouseReader: could not stop cleanly")
 		super().terminate()
 
 	def event_mouseMove(self, obj, nextHandler, x, y):

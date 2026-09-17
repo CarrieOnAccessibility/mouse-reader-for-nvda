@@ -191,6 +191,9 @@ class ReadFromHere:
 		except Exception:
 			return False
 
+	def shutdown(self):
+		self._ocr.shutdown()
+
 	def stop(self):
 		handler = sayAll.SayAllHandler
 		if handler:
@@ -241,6 +244,10 @@ class ReadFromHere:
 			return False
 		lx, ly, when = last
 		return time.time() - when < REPEAT_CLICK_SECONDS and math.hypot(x - lx, y - ly) < REPEAT_CLICK_PX
+
+	def onWheel(self, x, y, injected):
+		"""Low-level hook (hook thread): the wheel turned. A recognised window may have scrolled."""
+		queueHandler.queueFunction(queueHandler.eventQueue, self._ocr.wheelScrolled, x, y)
 
 	def readFromMouse(self):
 		x, y = winUser.getCursorPos()
