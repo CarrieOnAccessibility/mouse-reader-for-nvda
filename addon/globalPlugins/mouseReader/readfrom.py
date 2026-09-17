@@ -307,10 +307,8 @@ class ReadFromHere:
 				return
 			except Exception:
 				log.exception("mouseReader: could not start reading from the text under the mouse")
-		if self._ocr.snapshotFor(x, y) is not None:
-			startUnit = START_UNITS.get(self._settings.readFromStart(), textInfos.UNIT_PARAGRAPH)
-			if self._ocr.readFromSnapshot(x, y, startUnit):
-				return
+		# No real text here. Always recognise afresh (the window may have scrolled since the
+		# last time); the new snapshot then serves hovering. Recognition takes well under a second.
 		if self._settings.readFromOcr():
 			self._startOcr(x, y)
 		else:
