@@ -45,7 +45,7 @@ LEVEL_CHOICES = (
 
 SOURCE_CHOICES = (
 	# Translators: a text source: the page's own text when it has paragraphs, otherwise OCR.
-	(ocr.SOURCE_AUTO, _("Automatic (the page's own text when it has paragraphs, otherwise OCR)")),
+	(ocr.SOURCE_AUTO, _("Automatic")),
 	# Translators: a text source: always OCR.
 	(ocr.SOURCE_OCR, _("OCR only")),
 )
@@ -300,7 +300,7 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 		config.conf[CONF_SECTION]["source"] = nextSource
 		self.reader.forget("source changed")
 		# Translators: reported when the text source changes; {source} is Automatic or OCR only.
-		ui.message(_("Read text from: {source}").format(source=_("Automatic") if nextSource == ocr.SOURCE_AUTO else sourceLabel(nextSource)))
+		ui.message(_("Read text from: {source}").format(source=sourceLabel(nextSource)))
 
 	@script(
 		# Translators: description of the command that reads on from the mouse position.

@@ -206,10 +206,22 @@ _BULLETS = frozenset("•·▪▫◦‣⁃●○■□◆◇➢➤►▶-–—*
 SHORT_LINE_FRACTION = 0.75
 # Two OCR lines are pieces of one row (an italic run, a bold word, a font change: Windows OCR
 # often returns such a line in fragments) when their boxes overlap vertically by this share
-# of the shorter one and the horizontal gap between them is at most this many glyph heights.
-# Columns stand further apart than that.
+# of the shorter one, are of similar height (the taller at most this many times the shorter:
+# a column of bullet dots comes back as one tall "line", and must not swallow the rows beside
+# it), and the horizontal gap between them is at most this many glyph heights. Columns stand
+# further apart than that.
 ROW_OVERLAP_FRACTION = 0.5
+ROW_HEIGHT_RATIO = 2.5
 ROW_GAP_HEIGHTS = 1.5
+# An OCR "line" whose box is taller than this many times its typical word height is words
+# stacked on several rows (that column of dots): each word becomes a line of its own.
+STACKED_LINE_FACTOR = 1.8
+# A line reaching this fraction of its column's width is a full line: a sentence ending there,
+# followed by a capital on the next line at normal line pitch (within this factor of it), is a
+# sentence boundary inside a paragraph, not a paragraph break. Separate chat messages sit
+# further apart than the lines within one.
+FULL_LINE_FRACTION = 0.97
+SENTENCE_NEAR_PITCH_FACTOR = 1.15
 _NUMBERING = re.compile(r"^\(?(\d{1,3}|[a-zA-Z]|[ivxlcIVXLC]{1,5})[.)]$")
 # A line ending like this ends a sentence; if the next line then starts like a new sentence
 # (capital, digit, opening quote or bracket) the line break is a paragraph break.
@@ -240,16 +252,46 @@ def _startsSentence(words) -> bool:
 	return ch.isupper() or ch.isdigit() or ch in _SENTENCE_START
 
 
-def breaksAfter(previousWords, words, previousShort=False) -> bool:
+def breaksAfter(previousWords, words, previousShort=False, previousFull=False) -> bool:
 	"""Should the line `words` start a new paragraph rather than join the one ending with
-	`previousWords`? True for a list item, and for a sentence start after a line that ended
-	short of the width (previousShort): a full line goes on with its paragraph whatever its
-	punctuation, as book text does at every sentence boundary that lands on a line start."""
+	`previousWords`? True for a list item; for a sentence start after a line that ended short
+	of the width (previousShort); and for a sentence end followed by a sentence start, unless
+	the line that ended the sentence is a full one (previousFull): book text ends a sentence
+	and starts the next, capital and all, at a line start in the middle of a paragraph."""
 	if startsItem(words):
 		return True
 	if not _startsSentence(words):
 		return False
-	return previousShort
+	if previousShort:
+		return True
+	if previousFull:
+		return False
+	last = previousWords[-1]["text"]
+	return bool(_SENTENCE_END.search(last))
+
+
+def _lineOfWords(words):
+	return {
+		"top": min(w["y"] for w in words),
+		"bottom": max(w["y"] + w["height"] for w in words),
+		"left": min(w["x"] for w in words),
+		"right": max(w["x"] + w["width"] for w in words),
+		"words": sorted(words, key=lambda w: w["x"]),
+	}
+
+
+def unstackLines(lines):
+	"""An OCR "line" much taller than its words is words stacked on several rows (a column of
+	bullet dots): each word becomes a line of its own."""
+	out = []
+	for line in lines:
+		heights = sorted(w["height"] for w in line["words"])
+		typical = heights[len(heights) // 2] or 1
+		if len(line["words"]) > 1 and line["bottom"] - line["top"] > STACKED_LINE_FACTOR * typical:
+			out.extend(_lineOfWords([w]) for w in line["words"])
+		else:
+			out.append(line)
+	return out
 
 
 def mergeRows(lines):
@@ -257,10 +299,12 @@ def mergeRows(lines):
 	rule looking at a fragment ending in a full stop, or at a fragment's short right edge,
 	would break where nothing breaks. Lines are dicts with top/bottom/left/right/words."""
 	merged = []
-	for line in sorted(lines, key=lambda l: (l["top"], l["left"])):
+	for line in sorted(unstackLines(lines), key=lambda l: (l["top"], l["left"])):
 		height = line["bottom"] - line["top"]
 		for row in merged:
 			rowHeight = row["bottom"] - row["top"]
+			if max(height, rowHeight) > ROW_HEIGHT_RATIO * max(min(height, rowHeight), 1):
+				continue
 			overlap = min(line["bottom"], row["bottom"]) - max(line["top"], row["top"])
 			if overlap <= 0 or overlap < ROW_OVERLAP_FRACTION * min(height, rowHeight):
 				continue
@@ -332,8 +376,10 @@ def groupUnits(data, level):
 		pitches.append(below["top"] - a["top"])
 		if a["right"] >= a["columnRight"] * CAPITAL_AFTER_SHORT_FRACTION:
 			fullPitches.append(below["top"] - a["top"])
-	if len(fullPitches) >= 2:
-		pitch = sorted(fullPitches)[len(fullPitches) // 2]
+	if len(fullPitches) >= 3:
+		# Three or more: a wrapped paragraph, not a coincidence of chat lengths. The lower median,
+		# so a padded gap between two full chat lines cannot pass for the line pitch.
+		pitch = sorted(fullPitches)[(len(fullPitches) - 1) // 2]
 	else:
 		pitch = sorted(pitches)[len(pitches) // 2] if pitches else typical * 1.5
 		# In a chat made of one-line messages most pairs are message gaps, which would inflate
@@ -369,13 +415,15 @@ def groupUnits(data, level):
 				else:
 					shortLast = best["lastRight"] < best["columnRight"] * SHORT_LINE_FRACTION
 					shortish = best["lastRight"] < best["columnRight"] * CAPITAL_AFTER_SHORT_FRACTION
-					if shortLast or breaksAfter(best["lines"][-1], line["words"], previousShort=shortish):
+					full = best["lastRight"] >= best["columnRight"] * FULL_LINE_FRACTION and line["top"] - best["lastTop"] <= pitch * SENTENCE_NEAR_PITCH_FACTOR
+					if shortLast or breaksAfter(best["lines"][-1], line["words"], previousShort=shortish, previousFull=full):
 						best = None
 			else:
 				shortLast = best["lastRight"] < best["columnRight"] * SHORT_LINE_FRACTION
 				shortish = best["lastRight"] < best["columnRight"] * CAPITAL_AFTER_SHORT_FRACTION
+				full = best["lastRight"] >= best["columnRight"] * FULL_LINE_FRACTION and line["top"] - best["lastTop"] <= pitch * SENTENCE_NEAR_PITCH_FACTOR
 				indented = abs(line["left"] - best["lastLeft"]) > typical  # a list under its intro line, or back out of it
-				if shortLast or indented or breaksAfter(best["lines"][-1], line["words"], previousShort=shortish):
+				if shortLast or indented or breaksAfter(best["lines"][-1], line["words"], previousShort=shortish, previousFull=full):
 					best = None
 		if best is None:
 			words = line["words"]
