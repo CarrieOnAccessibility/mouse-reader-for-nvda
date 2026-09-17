@@ -46,6 +46,7 @@ document, such as the toolbar above it, are left to NVDA to read its own way.
 """
 
 import math
+import os
 import time
 
 import addonHandler
@@ -151,6 +152,60 @@ def _isBuffer(ti) -> bool:
 	return isinstance(ti, VirtualBuffer)
 
 
+_explained = {}  # pid -> time the UIA decision was last explained in the log
+
+
+def explainUIA(hwnd):
+	"""Log the inputs of NVDA's rule for reading a Chromium window through UIA (once a minute
+	per process): NVDA chooses UIA when the window offers a UIA provider and its in-process
+	helper has not registered from inside that process (or the process runs under another logon
+	session). Diagnostic only."""
+	import winUser
+
+	try:
+		pid, _tid = winUser.getWindowThreadProcessID(hwnd)
+	except Exception:
+		return
+	now = time.time()
+	if now - _explained.get(pid, 0) < 60:
+		return
+	_explained[pid] = now
+	parts = ["pid %d" % pid, "class %s" % winUser.getClassName(hwnd)]
+	try:
+		import appModuleHandler
+
+		mod = appModuleHandler.getAppModuleFromProcessID(pid)
+		parts.append("app %r" % getattr(mod, "appName", "?"))
+		parts.append("helper registered %s" % bool(getattr(mod, "helperLocalBindingHandle", None)))
+		try:
+			parts.append("different logon session %s" % bool(mod.isRunningUnderDifferentLogonSession))
+		except Exception:
+			parts.append("different logon session ?")
+	except Exception:
+		parts.append("no app module")
+	try:
+		from winBindings import uiAutomationCore
+
+		parts.append("UIA provider %s" % bool(uiAutomationCore.UiaHasServerSideProvider(hwnd)))
+	except Exception:
+		parts.append("UIA provider ?")
+	try:
+		import UIAHandler
+
+		parts.append("setting %s" % UIAHandler.AllowUiaInChromium.getConfig().name)
+	except Exception:
+		parts.append("setting ?")
+	try:
+		import psutil
+
+		names = {os.path.basename(m.path).lower() for m in psutil.Process(pid).memory_maps()}
+		parts.append("helper DLL in process %s" % ("nvdahelperremote.dll" in names))
+		parts.append("UIAutomationCore in process %s" % ("uiautomationcore.dll" in names))
+	except Exception:
+		parts.append("modules ?")
+	log.info("mouseReader: why UIA: " + ", ".join(parts))
+
+
 def isUIAWindowAt(x: int, y: int, topHwnd) -> bool:
 	"""Does NVDA read the window under the point through UI Automation?"""
 	try:
@@ -165,6 +220,7 @@ def isUIAWindowAt(x: int, y: int, topHwnd) -> bool:
 		child = user32.WindowFromPoint(POINT(x, y))
 		for hwnd in (child, topHwnd):
 			if hwnd and handler.isUIAWindow(hwnd):
+				explainUIA(hwnd)
 				return True
 		return False
 	except Exception:
