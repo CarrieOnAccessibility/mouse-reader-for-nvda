@@ -340,7 +340,43 @@ def documentAt(x: int, y: int, build: bool = True, known=None):
 
 
 def _clean(text) -> str:
-	return " ".join((text or "").replace("\ufffc", " ").split())
+	"""One line of speakable text: embedded-object marks and private-use glyphs (bullet symbols
+	from symbol fonts, which the voice cannot say) become spaces; whitespace collapses."""
+	text = (text or "").replace("\ufffc", " ")
+	if any("\ue000" <= ch <= "\uf8ff" for ch in text):
+		text = "".join(" " if "\ue000" <= ch <= "\uf8ff" else ch for ch in text)
+	return " ".join(text.split())
+
+
+def _normalBullet(text: str) -> str:
+	"""An item's odd bullet (a symbol-font glyph, an "o") becomes an ordinary one, so every item
+	sounds the same and NVDA's own symbol setting decides whether "bullet" is said."""
+	words = text.split(None, 1)
+	if not words:
+		return text
+	first = words[0]
+	rest = words[1] if len(words) > 1 else ""
+	if "" <= first[0] <= "":
+		return ("• " + (first[1:] + " " if first[1:] else "") + rest).strip()
+	if first in ("o", "O") and rest:
+		return "• " + rest
+	return text
+
+
+def _startsItem(line: str) -> bool:
+	"""Does this line of a paragraph begin a list item: a bullet (including a symbol-font glyph
+	or an "o"), or a numbering like "1." "2)" "a."? Same rules as the OCR side."""
+	words = line.split()
+	if not words:
+		return False
+	first = words[0]
+	if "\ue000" <= first[0] <= "\uf8ff":
+		return True
+	if first in ocr._BULLETS or ocr._NUMBERING.match(first):
+		return True
+	if len(first) > 1 and first[0] in ocr._BULLETS and first[1:2].isalnum():
+		return True  # the bullet glued onto the first word
+	return first in ("o", "O") and len(words) > 1
 
 
 def _isText(obj) -> bool:
@@ -392,15 +428,46 @@ def _rectText(loc) -> str:
 
 
 class Unit:
-	"""One reading unit of the document: what to say, and where it is (info: the buffer range;
-	None for a line, which is measured in the element rather than the buffer)."""
+	"""One reading unit of the document: what to say, where it is in the buffer (info; None for
+	a line, which is measured in the element rather than the buffer), and its box on screen
+	when known (rect)."""
 
-	__slots__ = ("key", "text", "info")
+	__slots__ = ("key", "text", "info", "rect")
 
-	def __init__(self, key, text, info=None):
+	def __init__(self, key, text, info=None, rect=None):
 		self.key = key
 		self.text = text
 		self.info = info
+		self.rect = rect
+
+
+class ItemSet:
+	"""A paragraph element that is really a list: its items, each with the lines it spans, so
+	the item under the pointer can be picked by the pointer's height within the element's box
+	(the lines of a PDF paragraph are evenly spaced)."""
+
+	__slots__ = ("items", "spans", "lineCount")
+
+	def __init__(self, items, spans, lineCount):
+		self.items = items  # [Unit]
+		self.spans = spans  # [(firstLine, lastLine)] per item
+		self.lineCount = lineCount
+
+	def pick(self, y, rect):
+		"""The item at the pointer's height, with its own slice of the box as its rect."""
+		if rect is None or not getattr(rect, "height", 0) or self.lineCount <= 0:
+			return self.items[0]
+		lineHeight = rect.height / float(self.lineCount)
+		lineIndex = int((y - rect.top) / lineHeight)
+		lineIndex = max(0, min(self.lineCount - 1, lineIndex))
+		for unit, (first, last) in zip(self.items, self.spans):
+			if first <= lineIndex <= last:
+				try:
+					unit.rect = type(rect)(rect.left, int(rect.top + first * lineHeight), rect.width, int((last - first + 1) * lineHeight))
+				except Exception:
+					unit.rect = None
+				return unit
+		return self.items[-1]
 
 
 class DocumentSnapshot(ocr.WindowSnapshot):
@@ -451,9 +518,14 @@ class DocumentSnapshot(ocr.WindowSnapshot):
 		del self._recent[:]
 
 	def _remember(self, rect, level, unit):
-		"""Keep the element's box with its unit, so hovering inside it costs nothing."""
-		if rect is None or level == ocr.LEVEL_LINE or unit is None:
+		"""Keep the unit's box (its own slice of a list, else the element's box) with the unit,
+		so hovering inside it costs nothing."""
+		if unit is None or level == ocr.LEVEL_LINE:
 			return  # a line is smaller than its element's box
+		if unit.rect is not None:
+			rect = unit.rect
+		if rect is None:
+			return
 		self._recent.append((rect, level, unit))
 		if len(self._recent) > RECENT_BOXES:
 			del self._recent[0]
@@ -544,18 +616,64 @@ class DocumentSnapshot(ocr.WindowSnapshot):
 			return None
 		return pos
 
+	def _splitItems(self, info):
+		"""A paragraph element as list items, when at least one of its lines after the first
+		begins with a bullet or a number (or the first does and another follows): [(item text,
+		first line, last line, character offset of the item's start)]. None otherwise."""
+		try:
+			raw = (info.text or "").replace("\r\n", "\n").replace("\r", "\n")
+		except Exception:
+			return None
+		lines = raw.split("\n")
+		while lines and not lines[-1].strip():
+			lines.pop()
+		if len(lines) < 2:
+			return None
+		items = []  # [lines list, first line, last line, offset]
+		offset = 0
+		for index, line in enumerate(lines):
+			if items and not _startsItem(line):
+				items[-1][0].append(line)
+				items[-1][2] = index
+			else:
+				items.append([[line], index, index, offset])
+			offset += len(line) + 1
+		if len(items) < 2:
+			return None
+		return [(_normalBullet(" ".join(part)), first, last, start) for part, first, last, start in items], len(lines)
+
 	def _paragraph(self, info, node=None, leaf=None):
 		"""The paragraph for a text leaf. The whole node when the node is a paragraph in itself
 		(a <p>, a list item, a heading, a PDF paragraph): its text may hold line breaks between
-		visual lines, and the buffer's paragraph unit would stop at the first. Otherwise the
-		buffer paragraph around where the leaf sits in the node, stretched to the end of a
-		multi-line text run. None when empty."""
+		visual lines, and the buffer's paragraph unit would stop at the first; when its lines
+		are bulleted or numbered it is a list, and an ItemSet of its items is returned instead.
+		Otherwise the buffer paragraph around where the leaf sits in the node, stretched to the
+		end of a multi-line text run. None when empty."""
 		if node is not None and _isParagraphRole(node):
 			whole = info.copy()
+			bookmark = whole.bookmark
+			split = self._splitItems(whole)
+			if split is not None:
+				parts, lineCount = split
+				units = []
+				spans = []
+				for index, (text, first, last, offset) in enumerate(parts):
+					text = _clean(text)
+					if not text:
+						continue
+					start = whole.copy()
+					start.collapse()
+					try:
+						start.move(textInfos.UNIT_CHARACTER, offset)
+					except Exception:
+						pass
+					units.append(Unit((ocr.LEVEL_PARAGRAPH, bookmark.startOffset, bookmark.endOffset, index), text, start))
+					spans.append((first, last))
+				if len(units) > 1:
+					return ItemSet(units, spans, lineCount)
 			text = _clean(whole.text)
 			if not text:
 				return None
-			bookmark = whole.bookmark
 			return Unit((ocr.LEVEL_PARAGRAPH, bookmark.startOffset, bookmark.endOffset), text, whole)
 		start = info.copy()
 		start.collapse()
@@ -577,12 +695,17 @@ class DocumentSnapshot(ocr.WindowSnapshot):
 		bookmark = para.bookmark
 		return Unit((ocr.LEVEL_PARAGRAPH, bookmark.startOffset, bookmark.endOffset), text, para)
 
-	def _block(self, info, node, leaf=None):
+	def _block(self, info, node, leaf=None, x=0, y=0, rect=None):
 		"""The node one up from the paragraph's: a list, a section, a table cell, a PDF page
 		region. The paragraph itself when the next node up is the whole document."""
 		paragraph = self._paragraph(info, node, leaf)
 		if paragraph is None:
 			return None
+		if isinstance(paragraph, ItemSet):
+			inner = info
+			paragraph = paragraph.pick(y, rect)
+		else:
+			inner = paragraph.info
 		o = node
 		for _ in range(4):
 			try:
@@ -597,7 +720,6 @@ class DocumentSnapshot(ocr.WindowSnapshot):
 				continue
 			except Exception:
 				return paragraph
-			inner = paragraph.info
 			startCmp = outer.compareEndPoints(inner, "startToStart")
 			endCmp = outer.compareEndPoints(inner, "endToEnd")
 			if startCmp <= 0 and endCmp >= 0:
@@ -639,33 +761,36 @@ class DocumentSnapshot(ocr.WindowSnapshot):
 			return None
 		return Unit((level, self._identity(obj)), text)
 
-	def unitAt(self, x, y, level, obj, trusted=False):
+	def unitAt(self, x, y, level, obj, trusted=False, rect=None):
 		"""The unit under the pointer at the level, or None over blank space, a container or a
 		control. trusted: obj was reached by walking down inside this document, so it need not
-		be checked for belonging to it. A container is never read from its first paragraph: in
-		Chrome's PDF viewer the whole PDF comes back as the answer while Chromium is still
-		working out the real one, and its first paragraph is Chrome's own "this PDF is
-		inaccessible" status line."""
+		be checked for belonging to it. rect: obj's box on screen, if already known (a list
+		paragraph picks its item by the pointer's height in it). A container is never read from
+		its first paragraph: in Chrome's PDF viewer the whole PDF comes back as the answer while
+		Chromium is still working out the real one, and its first paragraph is Chrome's own
+		"this PDF is inaccessible" status line."""
 		if not _isText(obj) or (not trusted and not self.inDocument(obj)):
 			return None
 		if level == ocr.LEVEL_LINE:
 			return self._line(x, y, obj)
 		ident = self._identity(obj)
 		cacheKey = (level, ident) if ident is not None else None
-		if cacheKey is not None and cacheKey in self._cache:
-			return self._cache[cacheKey]
-		found = self._nodeInfo(obj)
-		if found is None:
-			return None
-		info, node = found
-		if self._isRoot(node):
-			unit = self._elementText(obj, level)
-		elif level == ocr.LEVEL_BLOCK:
-			unit = self._block(info, node, obj)
-		else:
-			unit = self._paragraph(info, node, obj)
-		if cacheKey is not None and unit is not None:
-			self._cache[cacheKey] = unit
+		unit = self._cache.get(cacheKey) if cacheKey is not None else None
+		if unit is None:
+			found = self._nodeInfo(obj)
+			if found is None:
+				return None
+			info, node = found
+			if self._isRoot(node):
+				unit = self._elementText(obj, level)
+			elif level == ocr.LEVEL_BLOCK:
+				unit = self._block(info, node, obj, x, y, rect if rect is not None else _location(obj))
+			else:
+				unit = self._paragraph(info, node, obj)
+			if cacheKey is not None and unit is not None:
+				self._cache[cacheKey] = unit
+		if isinstance(unit, ItemSet):
+			return unit.pick(y, rect if rect is not None else _location(obj))
 		return unit
 
 	def _childRects(self, obj, refresh=False):
@@ -734,9 +859,11 @@ class DocumentSnapshot(ocr.WindowSnapshot):
 			log.info("mouseReader: walked down from %s: %s" % (describe(top), " > ".join(trail) if trail else "nowhere"))
 		if deep is None or deep is top or not _isText(deep):
 			return None, deep
-		unit = self.unitAt(x, y, level, deep, trusted=True)
+		if rect is None:
+			rect = _location(deep)
+		unit = self.unitAt(x, y, level, deep, trusted=True, rect=rect)
 		if unit is not None:
-			self._remember(rect if rect is not None else _location(deep), level, unit)
+			self._remember(rect, level, unit)
 		return unit, deep
 
 	def unitAtSecondAsk(self, x, y, level, obj):
@@ -754,9 +881,10 @@ class DocumentSnapshot(ocr.WindowSnapshot):
 			return None, obj
 		if _isText(obj):
 			self._via = "NVDA's element"
-			unit = self.unitAt(x, y, level, obj, trusted=True)
+			rect = _location(obj)
+			unit = self.unitAt(x, y, level, obj, trusted=True, rect=rect)
 			if unit is not None:
-				self._remember(_location(obj), level, unit)
+				self._remember(rect, level, unit)
 			return unit, obj
 		if not _isContainer(obj):
 			self._via = "a control"
@@ -770,9 +898,10 @@ class DocumentSnapshot(ocr.WindowSnapshot):
 		if again is None or again is obj:
 			return None, deep if deep is not None else obj
 		if _isText(again):
-			unit = self.unitAt(x, y, level, again)
+			rect = _location(again)
+			unit = self.unitAt(x, y, level, again, rect=rect)
 			if unit is not None:
-				self._remember(_location(again), level, unit)
+				self._remember(rect, level, unit)
 			return unit, again
 		if _isContainer(again):
 			self._via = "second ask, walk down"
