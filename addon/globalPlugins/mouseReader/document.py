@@ -96,6 +96,19 @@ _TEXT_ROLES = frozenset(
 	)
 	if role is not None
 )
+# Roles that are a paragraph in themselves: the whole element is the reading unit. A PDF
+# paragraph is one text element whose text holds line breaks between the visual lines, and the
+# buffer's own paragraph unit would stop at the first of them.
+_PARAGRAPH_ROLES = frozenset(
+	role
+	for role in (
+		getattr(controlTypes.Role, name, None)
+		for name in ("PARAGRAPH", "HEADING", "LISTITEM", "BLOCKQUOTE", "CAPTION", "LABEL", "TEXTFRAME")
+	)
+	if role is not None
+)
+# How many resolved boxes (element rectangle -> unit) a snapshot remembers for cheap hovering.
+RECENT_BOXES = 16
 
 
 def objectAt(x: int, y: int):
@@ -344,6 +357,20 @@ def _isContainer(obj) -> bool:
 		return False
 
 
+def _isParagraphRole(obj) -> bool:
+	try:
+		return obj.role in _PARAGRAPH_ROLES
+	except Exception:
+		return False
+
+
+def _location(obj):
+	try:
+		return obj.location
+	except Exception:
+		return None
+
+
 def _contains(loc, x, y) -> bool:
 	try:
 		return (
@@ -392,6 +419,8 @@ class DocumentSnapshot(ocr.WindowSnapshot):
 		self._hoverLogs = 0
 		self._descentLogs = 0
 		self._rects = {}  # element id -> [(rectangle, child)], until the document scrolls
+		self._recent = []  # [(rectangle, level, unit)] resolved lately, until the document scrolls
+		self._via = ""  # how the last lookup found its answer, for the log
 
 	@property
 	def kind(self) -> str:
@@ -419,6 +448,21 @@ class DocumentSnapshot(ocr.WindowSnapshot):
 		"""The wheel turned over the document: its elements have moved, so their rectangles are
 		fetched afresh next time."""
 		self._rects.clear()
+		del self._recent[:]
+
+	def _remember(self, rect, level, unit):
+		"""Keep the element's box with its unit, so hovering inside it costs nothing."""
+		if rect is None or level == ocr.LEVEL_LINE or unit is None:
+			return  # a line is smaller than its element's box
+		self._recent.append((rect, level, unit))
+		if len(self._recent) > RECENT_BOXES:
+			del self._recent[0]
+
+	def _recalled(self, x, y, level):
+		for rect, lvl, unit in reversed(self._recent):
+			if lvl == level and _contains(rect, x, y):
+				return unit
+		return None
 
 	# ---- what the pointer is over ----------------------------------------------------------
 
@@ -469,21 +513,74 @@ class DocumentSnapshot(ocr.WindowSnapshot):
 				return None
 		return None
 
-	def _paragraph(self, info):
-		"""The buffer paragraph at the start of info, or None when it is empty."""
-		info = info.copy()
-		info.collapse()
-		info.expand(textInfos.UNIT_PARAGRAPH)
-		text = _clean(info.text)
+	def _positionOfLeaf(self, info, leaf):
+		"""Where the text leaf sits inside the node's buffer range, found by its opening words;
+		None when it cannot be told."""
+		try:
+			raw = leaf.name or ""
+			if not raw:
+				raw = leaf.makeTextInfo(textInfos.POSITION_ALL).text or ""
+		except Exception:
+			return None
+		needle = raw.strip()[:30]
+		if len(needle) < 3:
+			return None
+		try:
+			hay = info.text or ""
+		except Exception:
+			return None
+		index = hay.find(needle)
+		if index < 0:
+			words = needle.split()
+			if len(words) >= 2:
+				index = hay.find(" ".join(words[:2]))
+		if index < 0:
+			return None
+		pos = info.copy()
+		pos.collapse()
+		try:
+			pos.move(textInfos.UNIT_CHARACTER, index)
+		except Exception:
+			return None
+		return pos
+
+	def _paragraph(self, info, node=None, leaf=None):
+		"""The paragraph for a text leaf. The whole node when the node is a paragraph in itself
+		(a <p>, a list item, a heading, a PDF paragraph): its text may hold line breaks between
+		visual lines, and the buffer's paragraph unit would stop at the first. Otherwise the
+		buffer paragraph around where the leaf sits in the node, stretched to the end of a
+		multi-line text run. None when empty."""
+		if node is not None and _isParagraphRole(node):
+			whole = info.copy()
+			text = _clean(whole.text)
+			if not text:
+				return None
+			bookmark = whole.bookmark
+			return Unit((ocr.LEVEL_PARAGRAPH, bookmark.startOffset, bookmark.endOffset), text, whole)
+		start = info.copy()
+		start.collapse()
+		if node is not None and leaf is not None and node is not leaf:
+			pos = self._positionOfLeaf(info, leaf)
+			if pos is not None:
+				start = pos
+		para = start.copy()
+		para.expand(textInfos.UNIT_PARAGRAPH)
+		if node is None or node is leaf:
+			try:
+				if "\n" in (info.text or "").strip() and para.compareEndPoints(info, "endToEnd") < 0:
+					para.setEndPoint(info, "endToEnd")  # a text run of several lines: all of it
+			except Exception:
+				pass
+		text = _clean(para.text)
 		if not text:
 			return None
-		bookmark = info.bookmark
-		return Unit((ocr.LEVEL_PARAGRAPH, bookmark.startOffset, bookmark.endOffset), text, info)
+		bookmark = para.bookmark
+		return Unit((ocr.LEVEL_PARAGRAPH, bookmark.startOffset, bookmark.endOffset), text, para)
 
-	def _block(self, info, node):
+	def _block(self, info, node, leaf=None):
 		"""The node one up from the paragraph's: a list, a section, a table cell, a PDF page
 		region. The paragraph itself when the next node up is the whole document."""
-		paragraph = self._paragraph(info)
+		paragraph = self._paragraph(info, node, leaf)
 		if paragraph is None:
 			return None
 		o = node
@@ -542,12 +639,14 @@ class DocumentSnapshot(ocr.WindowSnapshot):
 			return None
 		return Unit((level, self._identity(obj)), text)
 
-	def unitAt(self, x, y, level, obj):
+	def unitAt(self, x, y, level, obj, trusted=False):
 		"""The unit under the pointer at the level, or None over blank space, a container or a
-		control. A container is never read from its first paragraph: in Chrome's PDF viewer the
-		whole PDF comes back as the answer while Chromium is still working out the real one, and
-		its first paragraph is Chrome's own "this PDF is inaccessible" status line."""
-		if not self.inDocument(obj) or not _isText(obj):
+		control. trusted: obj was reached by walking down inside this document, so it need not
+		be checked for belonging to it. A container is never read from its first paragraph: in
+		Chrome's PDF viewer the whole PDF comes back as the answer while Chromium is still
+		working out the real one, and its first paragraph is Chrome's own "this PDF is
+		inaccessible" status line."""
+		if not _isText(obj) or (not trusted and not self.inDocument(obj)):
 			return None
 		if level == ocr.LEVEL_LINE:
 			return self._line(x, y, obj)
@@ -562,9 +661,9 @@ class DocumentSnapshot(ocr.WindowSnapshot):
 		if self._isRoot(node):
 			unit = self._elementText(obj, level)
 		elif level == ocr.LEVEL_BLOCK:
-			unit = self._block(info, node)
+			unit = self._block(info, node, obj)
 		else:
-			unit = self._paragraph(info)
+			unit = self._paragraph(info, node, obj)
 		if cacheKey is not None and unit is not None:
 			self._cache[cacheKey] = unit
 		return unit
@@ -594,9 +693,10 @@ class DocumentSnapshot(ocr.WindowSnapshot):
 		rectangles to the deepest element under the point. A child that is text wins over one
 		that is not; a sole child is entered whatever its rectangle says (it fills its parent);
 		rectangles that place no child under the point are fetched once more in case the
-		document moved without the wheel. Returns the deepest element reached (obj itself if
-		nothing under the point)."""
+		document moved without the wheel. Returns (deepest element reached, its rectangle);
+		obj itself, with no rectangle, if nothing under the point."""
 		current = obj
+		currentLoc = None
 		for _ in range(MAX_DESCENT):
 			if _isText(current) and not _isContainer(current):
 				break
@@ -622,31 +722,65 @@ class DocumentSnapshot(ocr.WindowSnapshot):
 				break
 			if trail is not None:
 				trail.append("%s %s" % (describe(hit), _rectText(hitLoc)))
-			current = hit
-		return current
+			current, currentLoc = hit, hitLoc
+		return current, currentLoc
 
-	def unitAtSecondAsk(self, x, y, level, obj):
-		"""The unit under the pointer. When the element NVDA found there is a container, the app
-		is asked about the point again (the second answer is the exact one, see the module note);
-		when that is a container too, the add-on walks down by rectangles from it. Returns
-		(unit, element the unit came from)."""
-		unit = self.unitAt(x, y, level, obj)
-		if unit is not None or not self.inDocument(obj) or not _isContainer(obj):
-			return unit, obj
-		again = objectAt(x, y)
-		if again is not None and again is not obj and _isText(again):
-			unit = self.unitAt(x, y, level, again)
-			if unit is not None:
-				return unit, again
-		top = again if (again is not None and _isContainer(again)) else obj
+	def _walkFrom(self, top, x, y, level):
+		"""Walk down from a container by rectangles; (unit, element) when text is reached there."""
 		trail = [] if self._descentLogs < DESCENT_LOG_LIMIT else None
-		deep = self._descend(top, x, y, trail)
+		deep, rect = self._descend(top, x, y, trail)
 		if trail is not None:
 			self._descentLogs += 1
 			log.info("mouseReader: walked down from %s: %s" % (describe(top), " > ".join(trail) if trail else "nowhere"))
-		if deep is not None and deep is not top and _isText(deep):
-			return self.unitAt(x, y, level, deep), deep
-		return None, deep if deep is not None else obj
+		if deep is None or deep is top or not _isText(deep):
+			return None, deep
+		unit = self.unitAt(x, y, level, deep, trusted=True)
+		if unit is not None:
+			self._remember(rect if rect is not None else _location(deep), level, unit)
+		return unit, deep
+
+	def unitAtSecondAsk(self, x, y, level, obj):
+		"""The unit under the pointer, cheapest way first: a box resolved lately that holds the
+		point; the element NVDA found, if it is text; a walk down by rectangles from it, if it
+		is a container (Chrome's PDF viewer answers with the box round the PDF); and only then
+		the app asked about the point again, with a walk down from that answer too. Returns
+		(unit, element the unit came from)."""
+		unit = self._recalled(x, y, level)
+		if unit is not None:
+			self._via = "remembered box"
+			return unit, obj
+		if not self.inDocument(obj):
+			self._via = "outside the document"
+			return None, obj
+		if _isText(obj):
+			self._via = "NVDA's element"
+			unit = self.unitAt(x, y, level, obj, trusted=True)
+			if unit is not None:
+				self._remember(_location(obj), level, unit)
+			return unit, obj
+		if not _isContainer(obj):
+			self._via = "a control"
+			return None, obj
+		self._via = "walk down"
+		unit, deep = self._walkFrom(obj, x, y, level)
+		if unit is not None:
+			return unit, deep
+		self._via = "second ask"
+		again = objectAt(x, y)
+		if again is None or again is obj:
+			return None, deep if deep is not None else obj
+		if _isText(again):
+			unit = self.unitAt(x, y, level, again)
+			if unit is not None:
+				self._remember(_location(again), level, unit)
+			return unit, again
+		if _isContainer(again):
+			self._via = "second ask, walk down"
+			unit, deep2 = self._walkFrom(again, x, y, level)
+			if unit is not None:
+				return unit, deep2
+			return None, deep2 if deep2 is not None else again
+		return None, again
 
 	# ---- speaking -------------------------------------------------------------------------
 
@@ -709,7 +843,7 @@ class DocumentSnapshot(ocr.WindowSnapshot):
 		unit, source = self.unitAtSecondAsk(x, y, level, obj)
 		lookupMs = int((time.time() - started) * 1000)
 		if lookupMs > SLOW_LOOKUP_MS:
-			log.info("mouseReader: finding the text under the mouse took %d ms" % lookupMs)
+			log.info("mouseReader: finding the text under the mouse took %d ms (%s)" % (lookupMs, self._via))
 		if unit is None:
 			if self.inDocument(obj) and _isContainer(obj):
 				if self._hoverLogs < HOVER_LOG_LIMIT:
@@ -743,10 +877,10 @@ class DocumentSnapshot(ocr.WindowSnapshot):
 		if math.hypot(cx - x, cy - y) > REST_PX or not self.covers(cx, cy):
 			return
 		obj = objectAt(cx, cy)
-		unit = self.unitAt(cx, cy, level, obj)
+		unit, source = self.unitAtSecondAsk(cx, cy, level, obj)
 		if self._hoverLogs < HOVER_LOG_LIMIT:
 			self._hoverLogs += 1
-			log.info("mouseReader: at rest the app answered %s -> %s" % (describe(obj), ("%r" % unit.text[:60]) if unit else "no text"))
+			log.info("mouseReader: at rest the app answered %s -> %s (%s)" % (describe(source), ("%r" % unit.text[:60]) if unit else "no text", self._via))
 		if unit is None or unit.key == self._lastSpoken:
 			return
 		self._speak(unit)
