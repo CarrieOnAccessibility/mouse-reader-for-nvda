@@ -15,6 +15,12 @@ nearest element from there upwards that the buffer knows as a node (text leaves 
 into their parent's text), then the buffer paragraph that node begins. No UIA, and nothing
 that was not already happening on every mouse move with tracking on.
 
+Asking twice. Chromium answers "what is under this point?" from a cached guess the first time
+it is asked about a point, and works out the exact answer in the background, ready for the
+next ask at the same point. In a web page the guess is usually right; inside the PDF viewer
+it is often just "the PDF". So when the first answer is a container, the point is asked
+about again a moment later, and the mouse resting on a spot asks again too.
+
 Levels. Paragraph is the buffer's paragraph (a <p>, a list item, a heading, a PDF paragraph).
 Line is the visual line of the element under the pointer, as the app reports it. Block is
 the node one up from the paragraph's (a list, a section, a table cell, a PDF page region).
@@ -25,6 +31,7 @@ as it does over a picture; controls (a button, an edit field) and anything outsi
 document, such as the toolbar above it, are left to NVDA to read its own way.
 """
 
+import math
 import time
 
 import addonHandler
@@ -32,6 +39,9 @@ import api
 import controlTypes
 import speech
 import textInfos
+import ui
+import winUser
+import wx
 from logHandler import log
 from speech import sayAll
 
@@ -46,6 +56,13 @@ except Exception:
 MAX_ANCESTORS = 8
 # Lookups slower than this are logged, to tell a slow app from a slow voice.
 SLOW_LOOKUP_MS = 150
+# A click whose first answer is a container asks again this much later.
+CLICK_RETRY_MS = 120
+# The mouse resting on a spot (moved less than REST_PX since) asks again this much later.
+REST_MS = 200
+REST_PX = 4
+# Hover misses logged per snapshot, so the log shows what Chromium answered without flooding.
+HOVER_LOG_LIMIT = 8
 
 # Roles whose element, or whose text leaf, counts as text under the pointer. Anything else with
 # children is a container (blank space); anything else without children is a control.
@@ -67,6 +84,25 @@ def objectAt(x: int, y: int):
 	except Exception:
 		log.debugWarning("mouseReader: objectFromPoint failed", exc_info=True)
 		return None
+
+
+def describe(obj) -> str:
+	"""One line about an element, for the log: role, name, children."""
+	if obj is None:
+		return "nothing"
+	try:
+		role = obj.role.name if hasattr(obj.role, "name") else str(obj.role)
+	except Exception:
+		role = "?"
+	try:
+		name = (obj.name or "")[:40]
+	except Exception:
+		name = ""
+	try:
+		children = obj.childCount
+	except Exception:
+		children = "?"
+	return "%s %r (%s children)" % (role, name, children)
 
 
 def bufferOf(obj):
@@ -106,7 +142,7 @@ def documentAt(x: int, y: int):
 
 
 def _clean(text) -> str:
-	return " ".join((text or "").replace("￼", " ").split())
+	return " ".join((text or "").replace("\ufffc", " ").split())
 
 
 def _isText(obj) -> bool:
@@ -145,13 +181,27 @@ class DocumentSnapshot(ocr.WindowSnapshot):
 		self._ti = ti
 		self._lastSpoken = None  # key of the unit read last
 		self._cache = {}  # (level, element id) -> Unit, for the life of the snapshot
+		self._restTimer = None
+		self._restAt = None  # (x, y, level) of the last container answer
+		self._closed = False
+		self._hoverLogs = 0
 
 	@property
 	def kind(self) -> str:
 		return type(self._ti).__name__
 
+	def close(self):
+		"""The snapshot is being dropped or replaced: no timer of its own may speak later."""
+		self._closed = True
+		if self._restTimer is not None:
+			try:
+				self._restTimer.Stop()
+			except Exception:
+				pass
+			self._restTimer = None
+
 	def isFresh(self) -> bool:
-		if not super().isFresh():
+		if self._closed or not super().isFresh():
 			return False
 		try:
 			return bool(self._ti.isAlive)
@@ -281,7 +331,10 @@ class DocumentSnapshot(ocr.WindowSnapshot):
 		return Unit((level, self._identity(obj)), text)
 
 	def unitAt(self, x, y, level, obj):
-		"""The unit under the pointer at the level, or None over blank space or a control."""
+		"""The unit under the pointer at the level, or None over blank space, a container or a
+		control. A container is never read from its first paragraph: in Chrome's PDF viewer the
+		whole PDF comes back as the answer while Chromium is still working out the real one, and
+		its first paragraph is Chrome's own "this PDF is inaccessible" status line."""
 		if not self.inDocument(obj) or not _isText(obj):
 			return None
 		if level == ocr.LEVEL_LINE:
@@ -304,18 +357,17 @@ class DocumentSnapshot(ocr.WindowSnapshot):
 			self._cache[cacheKey] = unit
 		return unit
 
-	def unitNear(self, x, y, level, obj):
-		"""For a click: the unit under the point, else the first paragraph of the container
-		clicked (its padding, the gap under a heading); nothing for the document's own margins."""
+	def unitAtSecondAsk(self, x, y, level, obj):
+		"""The unit under the pointer, asking the app again about the point when the element NVDA
+		found there is a container: the second answer is the exact one (see the module note).
+		Returns (unit, element the unit came from)."""
 		unit = self.unitAt(x, y, level, obj)
-		if unit is not None:
-			return unit
-		if not self.inDocument(obj) or not _isContainer(obj):
-			return None
-		found = self._nodeInfo(obj)
-		if found is None or self._isRoot(found[1]):
-			return None
-		return self._paragraph(found[0])
+		if unit is not None or not self.inDocument(obj) or not _isContainer(obj):
+			return unit, obj
+		again = objectAt(x, y)
+		if again is None or again is obj:
+			return None, obj
+		return self.unitAt(x, y, level, again), again
 
 	# ---- speaking -------------------------------------------------------------------------
 
@@ -323,43 +375,111 @@ class DocumentSnapshot(ocr.WindowSnapshot):
 		self._lastSpoken = unit.key
 		ocr.speakLines([unit.text])
 
-	def speakAt(self, x, y, level, obj) -> bool:
-		"""For a click: read the unit under (or nearest) the point. False if there is none."""
-		unit = self.unitNear(x, y, level, obj)
-		if unit is None:
-			return False
-		self._speak(unit)
-		return True
-
-	def hover(self, x, y, level, obj=None) -> bool:
-		"""Read the unit under the pointer when it is a different one from the unit read last.
-		Blank space and the unit just read leave things alone. True when something was read."""
-		started = time.time()
-		unit = self.unitAt(x, y, level, obj)
-		lookupMs = int((time.time() - started) * 1000)
-		if lookupMs > SLOW_LOOKUP_MS:
-			log.info("mouseReader: finding the text under the mouse took %d ms" % lookupMs)
-		if unit is None or unit.key == self._lastSpoken:
-			return False
-		self._speak(unit)
-		return True
-
 	def _isFocused(self) -> bool:
-		"""Is this the document with the system focus, in browse mode? Then reading on can move
-		the browse-mode caret, which brings the page along as it reads."""
+		"""Is this the document with the system focus, in browse mode? Then the browse-mode caret
+		can be moved to what was clicked, and reading on can move it, which brings the page along."""
 		try:
 			ti = api.getFocusObject().treeInterceptor
 			return ti is self._ti and not ti.passThrough
 		except Exception:
 			return False
 
+	def _moveCaretTo(self, unit):
+		"""Put the browse-mode caret at the start of the unit, so the keyboard carries on from
+		what was clicked (and Chromium refreshes its idea of where that text is)."""
+		if unit.info is None or not self._isFocused():
+			return
+		try:
+			start = unit.info.copy()
+			start.collapse()
+			self._ti.selection = start
+			log.info("mouseReader: browse caret moved to the clicked paragraph")
+		except Exception:
+			log.debugWarning("mouseReader: could not move the browse caret", exc_info=True)
+
+	def speakAt(self, x, y, level, obj, retry=True) -> bool:
+		"""For a click: read the unit under the point and move the browse caret there. When the
+		app answered with a container and retry is on, ask again in a moment; the caller hears
+		True either way. False only when there is nothing to read and no retry."""
+		unit, source = self.unitAtSecondAsk(x, y, level, obj)
+		log.info(
+			"mouseReader: click landed on %s%s -> %s"
+			% (describe(obj), "" if source is obj else ", second ask %s" % describe(source), ("%r" % unit.text[:60]) if unit else "no text")
+		)
+		if unit is not None:
+			self._speak(unit)
+			self._moveCaretTo(unit)
+			return True
+		if retry and self.inDocument(obj) and _isContainer(obj):
+			wx.CallLater(CLICK_RETRY_MS, self._retryClick, x, y, level)
+			return True
+		return False
+
+	def _retryClick(self, x, y, level):
+		if not self.isFresh():
+			return
+		obj = objectAt(x, y)
+		if not self.speakAt(x, y, level, obj, retry=False):
+			ui.message(ocr.NO_TEXT_UNDER_MOUSE)
+
+	def hover(self, x, y, level, obj=None) -> bool:
+		"""Read the unit under the pointer when it is a different one from the unit read last.
+		Blank space and the unit just read leave things alone. A container answer arms one more
+		ask once the mouse has rested. True when something was read."""
+		started = time.time()
+		unit, source = self.unitAtSecondAsk(x, y, level, obj)
+		lookupMs = int((time.time() - started) * 1000)
+		if lookupMs > SLOW_LOOKUP_MS:
+			log.info("mouseReader: finding the text under the mouse took %d ms" % lookupMs)
+		if unit is None:
+			if self.inDocument(obj) and _isContainer(obj):
+				if self._hoverLogs < HOVER_LOG_LIMIT:
+					self._hoverLogs += 1
+					log.info("mouseReader: hover over %s%s; will ask again at rest" % (describe(obj), "" if source is obj else ", second ask %s" % describe(source)))
+				self._armRest(x, y, level)
+			return False
+		if unit.key == self._lastSpoken:
+			return False
+		self._speak(unit)
+		return True
+
+	def _armRest(self, x, y, level):
+		if self._closed:
+			return
+		self._restAt = (x, y, level)
+		try:
+			if self._restTimer is None:
+				self._restTimer = wx.CallLater(REST_MS, self._onRest)
+			else:
+				self._restTimer.Start(REST_MS)
+		except Exception:
+			log.debugWarning("mouseReader: could not arm the rest timer", exc_info=True)
+
+	def _onRest(self):
+		"""The mouse has rested since the last container answer: ask about the spot again."""
+		if not self.isFresh() or ocr.isReadingAll() or self._restAt is None:
+			return
+		x, y, level = self._restAt
+		cx, cy = winUser.getCursorPos()
+		if math.hypot(cx - x, cy - y) > REST_PX or not self.covers(cx, cy):
+			return
+		obj = objectAt(cx, cy)
+		unit = self.unitAt(cx, cy, level, obj)
+		if self._hoverLogs < HOVER_LOG_LIMIT:
+			self._hoverLogs += 1
+			log.info("mouseReader: at rest the app answered %s -> %s" % (describe(obj), ("%r" % unit.text[:60]) if unit else "no text"))
+		if unit is None or unit.key == self._lastSpoken:
+			return
+		self._speak(unit)
+
 	def readAllFrom(self, x, y, level, obj=None) -> bool:
-		"""Start NVDA's Say All at the paragraph under (or nearest) the point: from the browse-mode
-		caret when this document has focus, so the page scrolls along; else from the review
-		cursor, without touching the caret. False if there is nothing to read from."""
+		"""Start NVDA's Say All at the paragraph under the point: from the browse-mode caret when
+		this document has focus, so the page scrolls along; else from the review cursor, without
+		touching the caret. False if there is nothing to read from."""
 		if obj is None:
 			obj = objectAt(x, y)
-		unit = self.unitNear(x, y, ocr.LEVEL_PARAGRAPH, obj)
+		unit, source = self.unitAtSecondAsk(x, y, ocr.LEVEL_PARAGRAPH, obj)
+		log.info("mouseReader: read on from %s -> %s" % (describe(source), ("%r" % unit.text[:60]) if unit else "no text"))
 		if unit is None or unit.info is None:
 			return False
 		start = unit.info.copy()

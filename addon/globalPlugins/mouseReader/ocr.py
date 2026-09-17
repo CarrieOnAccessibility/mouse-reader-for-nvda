@@ -530,7 +530,20 @@ class OcrReader:
 		self._wheelTimer = None
 		self._wheelPos = None
 
+	def _setSnapshot(self, snapshot):
+		"""Replace the snapshot, letting the old one stop any timer of its own first."""
+		old = self.snapshot
+		if old is not None and old is not snapshot:
+			close = getattr(old, "close", None)
+			if close is not None:
+				try:
+					close()
+				except Exception:
+					pass
+		self.snapshot = snapshot
+
 	def shutdown(self):
+		self._setSnapshot(None)
 		if self._wheelTimer is not None:
 			try:
 				self._wheelTimer.Stop()
@@ -624,7 +637,7 @@ class OcrReader:
 			except Exception:
 				pass
 			self._pending = None
-		self.snapshot = snapshot
+		self._setSnapshot(snapshot)
 		log.info("mouseReader: document under the mouse (%s); reading from it, no OCR" % snapshot.kind)
 		level = self._level()
 		if readAllAfter:
@@ -638,7 +651,7 @@ class OcrReader:
 					snapshot.hover(cx, cy, level, document.objectAt(cx, cy))
 			return True
 		if not snapshot.speakAt(x, y, level, obj):
-			ui.message(NO_TEXT_UNDER_MOUSE)
+			ui.message(NO_TEXT_UNDER_MOUSE)  # a control or the bare margin: nothing to ask again about
 		return True
 
 	def _onResult(self, recognizer, hwnd, rect, result, x, y, quiet, readAllAfter=False):
@@ -661,7 +674,7 @@ class OcrReader:
 				# Translators: message when OCR found no text in the window under the mouse.
 				ui.message(_("No text recognized"))
 			return
-		self.snapshot = snapshot
+		self._setSnapshot(snapshot)
 		log.info(
 			"mouseReader: OCR found %d lines, %d paragraphs, %d blocks"
 			% tuple(len(snapshot.units(level)) for level in LEVELS)
@@ -707,7 +720,7 @@ class OcrReader:
 		if snapshot is None:
 			return False
 		if not snapshot.isFresh():
-			self.snapshot = None
+			self._setSnapshot(None)
 			return False
 		started = time.time()
 		if not snapshot.covers(x, y):
@@ -741,7 +754,7 @@ class OcrReader:
 
 	def forget(self):
 		stopReadingAll()
-		self.snapshot = None
+		self._setSnapshot(None)
 		if self._wheelTimer is not None:
 			try:
 				self._wheelTimer.Stop()
