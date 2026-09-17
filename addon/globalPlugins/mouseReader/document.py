@@ -28,6 +28,12 @@ Levels. Paragraph is the buffer's paragraph (a <p>, a list item, a heading, a PD
 Line is the visual line of the element under the pointer, as the app reports it. Block is
 the node one up from the paragraph's (a list, a section, a table cell, a PDF page region).
 
+Windows NVDA reads through UI Automation are left alone entirely: for Chromium that is NVDA's
+fallback for when it could not hook into the browser process (typically after NVDA was
+restarted while the browser stayed open), it is slow to answer, and merely walking its
+elements froze NVDA for seconds. Such a window goes straight to OCR, and the log says so;
+exiting and reopening the browser puts it back on the normal route.
+
 NVDA builds its copy of a page only when the page gets focus, so right after NVDA starts, or
 for a window that has not been focused since, there is none. Then the add-on asks NVDA to
 build it, exactly as focus would, waits for it to load, and carries on. OCR is only for a
@@ -75,8 +81,9 @@ HOVER_LOG_LIMIT = 8
 # many of those walks to log per snapshot.
 MAX_DESCENT = 10
 DESCENT_LOG_LIMIT = 4
-# How far up from the element under the mouse to look for the page it is in.
-MAX_ROOT_SEARCH = 40
+# How far up from the element under the mouse to look for the page it is in, and for how long.
+MAX_ROOT_SEARCH = 25
+ROOT_SEARCH_BUDGET_MS = 300
 
 # Roles whose element, or whose text leaf, counts as text under the pointer. Anything else with
 # children is a container (blank space); anything else without children is a control.
@@ -144,6 +151,27 @@ def _isBuffer(ti) -> bool:
 	return isinstance(ti, VirtualBuffer)
 
 
+def isUIAWindowAt(x: int, y: int, topHwnd) -> bool:
+	"""Does NVDA read the window under the point through UI Automation?"""
+	try:
+		import UIAHandler
+		from ctypes.wintypes import POINT
+
+		from winBindings import user32
+
+		handler = UIAHandler.handler
+		if handler is None:
+			return False
+		child = user32.WindowFromPoint(POINT(x, y))
+		for hwnd in (child, topHwnd):
+			if hwnd and handler.isUIAWindow(hwnd):
+				return True
+		return False
+	except Exception:
+		log.debugWarning("mouseReader: could not tell whether the window uses UIA", exc_info=True)
+		return False
+
+
 def bufferOf(obj):
 	"""The browse-mode copy of the page holding obj: a ready in-process buffer, or Loading while
 	NVDA is still building it, or None when there is none (or it is not an in-process one)."""
@@ -169,6 +197,7 @@ def buildBufferFor(obj):
 	NVDA would not treat that window as a document."""
 	import treeInterceptorHandler
 
+	started = time.time()
 	root = None
 	o = obj
 	for _ in range(MAX_ROOT_SEARCH):
@@ -179,6 +208,9 @@ def buildBufferFor(obj):
 				root = o
 		except Exception:
 			pass
+		if (time.time() - started) * 1000 > ROOT_SEARCH_BUDGET_MS:
+			log.info("mouseReader: looking for the page root took too long (%d ms); using OCR" % int((time.time() - started) * 1000))
+			return None
 		try:
 			o = o.parent
 		except Exception:
@@ -203,6 +235,12 @@ def documentAt(x: int, y: int, build: bool = True, known=None):
 	it)."""
 	found = ocr.windowAt(x, y)
 	if found is None:
+		return None
+	if known is None and isUIAWindowAt(x, y, found[0]):
+		log.info(
+			"mouseReader: NVDA reads the window under the mouse through UIA (for a browser: it could not hook into "
+			"the process, usually after an NVDA restart; exit and reopen the browser to fix); using OCR"
+		)
 		return None
 	obj = objectAt(x, y)
 	if known is not None:
