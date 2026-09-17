@@ -6,29 +6,19 @@
 </head>
 <body>
 <h1>Mouse Reader</h1>
-<p><strong>Read from here.</strong> Hold NVDA+control and click anywhere in a piece of text, and NVDA reads on from there until you press a key, the way Windows Magnifier's read-aloud does. The click is swallowed, so the app underneath does not see it: nothing gets selected or opened. Two commands skip back or forward a paragraph while it reads.</p>
-<p>Reading uses NVDA's own Say All from the review cursor, so it stops on any key, scrolls the document, and follows NVDA's Say All settings. On a web page the position is carried into the page, so reading continues past the paragraph you clicked.</p>
-<p>If nothing under the click has text at all (a picture of text, or an app such as Slack that cannot say what is at a screen point), and the option is on, Mouse Reader recognises the text in the window under the pointer with Windows' built-in OCR (the same engine as NVDA+R) and starts reading from the recognised paragraph nearest the click. Nothing opens and there is nothing to close: any key stops the reading, and the skip commands work. The window is asked to draw itself for the picture, so it works with Windows Magnifier in full-screen mode and covers the whole window, not only the part on screen.</p>
-<p>For three minutes after that, the recognised text also answers the mouse: point at a spot in that window where NVDA itself finds no text and the recognised paragraph there is read, once per paragraph. Every NVDA+control+click recognises afresh, so a window that has scrolled is never read from an old picture; NVDA+control+shift+click recognises without reading. Scrolling the mouse wheel over a recognised window recognises it again half a second after the wheel stops, silently, and the paragraph now under the pointer is read (unless a reading is in progress). Recognised paragraphs are formed from the gaps between lines, column by column, so a sidebar and a message list stay apart; OCR gives plain text without links or headings, and takes a fraction of a second for a small window and a second or two for a large one.</p>
+<p>For the apps where NVDA's mouse tracking goes silent because the app cannot say what is at a point on the screen: Slack and other Electron apps, pictures of text, and the like.</p>
+<p>Hold <strong>NVDA+control</strong> and click anywhere in the window (or press <strong>NVDA+control+enter</strong> with the pointer over it). The window is recognised with Windows' built-in OCR (the same engine as NVDA+R) and the paragraph under the pointer is read. From then on, for three minutes, hovering over that window reads the recognised paragraph under the pointer, once per paragraph; scrolling the mouse wheel over it recognises it again half a second after the wheel stops, and reads the paragraph now under the pointer. Another NVDA+control+click recognises afresh at any time. The click is swallowed, so the app underneath does not see it.</p>
+<p>The window is asked to draw itself for the picture rather than the screen being photographed, so this works with Windows Magnifier in full-screen mode and covers the whole window, not only the part on screen. Recognised paragraphs are formed from the spacing between lines, column by column, so a sidebar and a message list stay apart. Inside a recognised window NVDA's own mouse tracking stays out of the way, so hovering behaves the same everywhere in it; everywhere else NVDA is untouched.</p>
+<p>OCR gives plain text without links or headings, and takes a fraction of a second for a small window and up to a second or so for a large one.</p>
 <h2>Settings</h2>
-<p>The <strong>Mouse Reader</strong> category in <strong>NVDA menu &gt; Preferences &gt; Settings</strong>.</p>
-<ul>
-<li><strong>Read from here with NVDA+control+click</strong>: the click trigger on or off. The keyboard command works either way.</li>
-<li><strong>Read from here starts at</strong>: the beginning of the paragraph you clicked (the default), the beginning of the line, the beginning of the word, or the exact spot.</li>
-<li><strong>Use OCR when Read from here finds no text</strong>: on by default.</li>
-</ul>
+<p>The <strong>Mouse Reader</strong> category in <strong>NVDA menu &gt; Preferences &gt; Settings</strong> has one check box, <strong>Recognize the window under the mouse with NVDA+control+click</strong>. The keyboard command works either way.</p>
 <h2>Commands</h2>
-<p>All of them can be changed in NVDA's Input Gestures dialog, under the <strong>Mouse Reader</strong> category.</p>
 <ul>
-<li><strong>NVDA+control+click</strong>: read from here. Where there is no real text it recognises the window first, then reads from the paragraph nearest the click.</li>
-<li><strong>NVDA+shift+R</strong>: read from wherever the mouse pointer is, without clicking.</li>
-<li><strong>NVDA+control+shift+click</strong> or <strong>NVDA+control+shift+R</strong>: recognise the window under the mouse without reading, for hovering.</li>
-<li><strong>Move the review cursor to the text under the mouse</strong> (no key by default): puts NVDA's review cursor there and says "Review cursor at mouse", so NVDA's own read-from-review command (NVDA+numpad plus, or NVDA+shift+A in the laptop layout) reads from the mouse.</li>
-<li><strong>NVDA+alt+comma</strong> and <strong>NVDA+alt+period</strong>: while reading, skip back or forward a paragraph and keep reading. After reading has stopped, they continue from the previous or next paragraph.</li>
-<li>Any other key stops the reading, as with NVDA's own Say All; control on its own stops it too. Moving the mouse onto another recognised paragraph stops the reading and reads that paragraph; moving around inside the paragraph being read, or across blank space, does not interrupt it.</li>
+<li><strong>NVDA+control+click</strong>: recognise the window under the mouse and read the paragraph under the pointer.</li>
+<li><strong>NVDA+control+enter</strong>: the same, without clicking. It can be changed in NVDA's Input Gestures dialog, under the <strong>Mouse Reader</strong> category.</li>
 </ul>
 <h2>A delay for mouse tracking</h2>
-<p>Making NVDA's mouse tracking wait until the mouse has stopped is a separate add-on, <strong>Mouse Echo Delay</strong>, from the same author. The two work independently.</p>
+<p>Making NVDA's mouse tracking wait until the mouse has stopped is a separate add-on, <strong>Mouse Echo Delay</strong>, from the same author. The two work together: with both installed, hovering in a recognised window reads a paragraph once the mouse has been still for the delay.</p>
 <h2>Licence</h2>
 <p>Copyright &copy; 2026 Carrie on Accessibility. Free software under the GNU General Public License, version 2, the same licence as NVDA.</p>
 </body>

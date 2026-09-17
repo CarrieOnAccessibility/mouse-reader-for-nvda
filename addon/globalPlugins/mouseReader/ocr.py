@@ -2,46 +2,53 @@
 # This program is free software: you can redistribute it and/or modify it under the terms of
 # the GNU General Public License as published by the Free Software Foundation, version 2.
 # See the LICENSE file for details.
-"""OCR for Read from here, and the snapshot it leaves behind for hovering.
+"""Recognising a window, and the snapshot that answers the mouse afterwards.
 
 Capture. NVDA's own OCR photographs the screen, and with full-screen Magnifier "the screen"
-is the zoomed-in view, so the picture and the click do not line up and most of the window is
-missing. Here the window itself is asked to render into a picture (PrintWindow with
+is the zoomed-in view, so the picture and the pointer do not line up and most of the window
+is missing. Here the window itself is asked to render into a picture (PrintWindow with
 PW_RENDERFULLCONTENT), which gives the whole window at its real size whatever Magnifier is
 doing. The screen is photographed only if the window refuses.
 
 Result. Windows OCR returns lines of words with their positions. Lines are grouped into
-paragraphs by the vertical gaps between them, and the paragraphs become the "lines" of an
-NVDA recognition result. That result is wrapped in NVDA's recognition-result object, but the
-object is never given focus: reading uses NVDA's Say All from the review cursor placed on it,
-so any key stops the reading and there is nothing to close afterwards. The same snapshot then
-serves the hover: while it is fresh, pointing at a spot in that window where NVDA itself
-finds no text reads the recognised paragraph there, once per paragraph.
+paragraphs by the vertical gaps between them and their horizontal overlap (so a sidebar and
+a message list stay apart). The snapshot then answers the mouse: while it is fresh, pointing
+at a spot in that window reads the recognised paragraph there, once per paragraph, and NVDA's
+own mouse tracking stays out of that window; the wheel recognises the window again once it
+is still.
+
+Speaking a paragraph goes through NVDA's SpeechWithoutPauses, so the voice receives sentence
+sized pieces (one huge utterance is what froze the 32-bit voice bridge) while the paragraph
+still sounds like one continuous read.
 """
 
 import ctypes
 import time
 from ctypes import byref
-from ctypes.wintypes import RECT
+from ctypes.wintypes import POINT, RECT
 
-import api
+import addonHandler
 import queueHandler
 import speech
-import textInfos
-import textInfos.offsets
 import ui
 import winGDI
+import winUser
+import wx
 from logHandler import log
-from speech import sayAll
 from winBindings import gdi32, user32
+
+try:
+	addonHandler.initTranslation()
+except Exception:
+	pass
 
 PW_RENDERFULLCONTENT = 0x00000002
 SNAPSHOT_LIFETIME_SECONDS = 180
 # After the wheel stops turning over a recognised window, recognise it again this much later.
 WHEEL_RERECOGNIZE_MS = 500
-# A gap between two OCR lines larger than this fraction of the typical line height starts a
-# new paragraph.
-PARAGRAPH_GAP_FACTOR = 0.6
+# Consecutive lines whose tops are further apart than this many typical line pitches start a
+# new paragraph (1 = normal spacing; a blank line between messages is about 2).
+PARAGRAPH_BREAK_FACTOR = 1.55
 
 _PrintWindow = ctypes.windll.user32.PrintWindow
 _PrintWindow.restype = ctypes.c_int
@@ -49,7 +56,7 @@ _PrintWindow.argtypes = (ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint)
 
 
 class _WindowImageInfo:
-	"""What a recogniser needs to know about the picture: its size, and how to turn picture
+	"""What the recogniser needs to know about the picture: its size, and how to turn picture
 	coordinates into screen coordinates. Unlike NVDA's RecogImageInfo this allows a window
 	that starts left of or above the primary monitor (negative coordinates)."""
 
@@ -76,12 +83,10 @@ class _WindowImageInfo:
 
 def windowAt(x: int, y: int):
 	"""(hwnd, (left, top, width, height)) of the top-level window under the point, or None."""
-	from ctypes.wintypes import POINT
-
 	try:
 		hwnd = user32.WindowFromPoint(POINT(x, y))
 		if hwnd:
-			hwnd = user32.GetAncestor(hwnd, 2) or hwnd  # GA_ROOT
+			hwnd = user32.GetAncestor(hwnd, winUser.GA_ROOT) or hwnd
 	except Exception:
 		log.debugWarning("mouseReader: WindowFromPoint failed", exc_info=True)
 		return None
@@ -130,7 +135,7 @@ def captureWindow(hwnd, rect):
 
 
 class Paragraph:
-	__slots__ = ("lines", "words", "left", "top", "right", "bottom", "offset", "end")
+	__slots__ = ("lines", "words", "left", "top", "right", "bottom")
 
 	def __init__(self, lines):
 		self.lines = lines  # lists of word dicts, one per OCR line, in reading order
@@ -139,8 +144,6 @@ class Paragraph:
 		self.top = min(w["y"] for w in self.words)
 		self.right = max(w["x"] + w["width"] for w in self.words)
 		self.bottom = max(w["y"] + w["height"] for w in self.words)
-		self.offset = 0  # start offset in the result text, set once the result is built
-		self.end = 0  # end offset (after the last line's newline)
 
 	@property
 	def text(self):
@@ -158,7 +161,7 @@ def groupParagraphs(data):
 	A line joins the paragraph directly above it when the vertical gap is small *and* the two
 	overlap horizontally; a sidebar and a message list at the same heights therefore stay
 	apart. Paragraphs are then ordered column by column (left to right), top to bottom within
-	a column, so "read onward" walks down the messages instead of hopping across to the sidebar.
+	a column.
 	"""
 	lines = []
 	for words in data:
@@ -176,28 +179,38 @@ def groupParagraphs(data):
 	lines.sort(key=lambda line: (line["top"], line["left"]))
 	heights = sorted(line["bottom"] - line["top"] for line in lines)
 	typical = heights[len(heights) // 2] or 1
-	gap = typical * PARAGRAPH_GAP_FACTOR
+	# The typical line pitch (top to top of consecutive, horizontally overlapping lines) is a
+	# steadier yardstick than glyph height, which changes with ascenders and descenders.
+	pitches = []
+	for i in range(len(lines) - 1):
+		a, b = lines[i], lines[i + 1]
+		if _overlap(a["left"], a["right"], b["left"], b["right"]) > 0 and 0 < b["top"] - a["top"] < typical * 3:
+			pitches.append(b["top"] - a["top"])
+	pitch = sorted(pitches)[len(pitches) // 2] if pitches else typical * 1.5
+	# In a chat made of one-line messages most pairs are message gaps, which would inflate the
+	# estimate; normal line spacing is never much more than 1.7 glyph heights.
+	pitch = min(pitch, typical * 1.7)
+	breakPitch = pitch * PARAGRAPH_BREAK_FACTOR
 
-	# Group lines into paragraphs (each a dict with the running box and its words).
 	paragraphs = []
 	for line in lines:
 		best = None
 		bestOverlap = 0
 		for p in paragraphs:
-			if line["top"] - p["bottom"] > gap or line["top"] < p["top"]:
+			if line["top"] - p["lastTop"] > breakPitch or line["top"] < p["top"]:
 				continue
 			overlap = _overlap(line["left"], line["right"], p["left"], p["right"])
 			if overlap > bestOverlap:
 				best, bestOverlap = p, overlap
 		if best is None:
-			paragraphs.append(dict(line, lines=[line["words"]]))
+			paragraphs.append(dict(line, lines=[line["words"]], lastTop=line["top"]))
 			continue
 		best["lines"].append(line["words"])
+		best["lastTop"] = max(best["lastTop"], line["top"])
 		best["bottom"] = max(best["bottom"], line["bottom"])
 		best["left"] = min(best["left"], line["left"])
 		best["right"] = max(best["right"], line["right"])
 
-	# Columns: paragraphs whose horizontal ranges mostly overlap.
 	columns = []
 	for p in sorted(paragraphs, key=lambda p: p["left"]):
 		for column in columns:
@@ -216,50 +229,11 @@ def groupParagraphs(data):
 	return [Paragraph(p["lines"]) for p in ordered]
 
 
-class _ParagraphResult:
-	"""Builds NVDA's LinesWordsResult over the OCR *lines* (short reading chunks for Say All,
-	which matters for the voice) while a TextInfo subclass knows the paragraph boundaries,
-	so skipping by paragraph and "beginning of the paragraph" use the grouped paragraphs."""
-
-	@staticmethod
-	def build(paragraphs, imgInfo):
-		from contentRecog import LinesWordsResult, LwrTextInfo
-
-		data = [line for p in paragraphs for line in p.lines]
-		offset = 0
-		for p in paragraphs:
-			p.offset = offset
-			for line in p.lines:
-				offset += sum(len(w["text"]) for w in line) + max(len(line) - 1, 0) + 1  # spaces + newline
-			p.end = offset
-		bounds = [(p.offset, p.end) for p in paragraphs]
-
-		class ParagraphTextInfo(LwrTextInfo):
-			def _getParagraphOffsets(self, offset):
-				for start, end in bounds:
-					if start <= offset < end:
-						return (start, end)
-				return self._getLineOffsets(offset)
-
-			def copy(self):
-				return self.__class__(self.obj, self.bookmark, self.result)
-
-		class ParagraphLinesWordsResult(LinesWordsResult):
-			def makeTextInfo(self, obj, position):
-				return ParagraphTextInfo(obj, position, self)
-
-		return ParagraphLinesWordsResult(data, imgInfo)
-
-
 def speakParagraph(paragraph):
-	"""Speak a whole paragraph, handed to the voice in sentence-sized pieces.
-
-	One long utterance (a whole Slack message) is what froze NVDA's voice bridge; NVDA's own
-	Say All avoids that with SpeechWithoutPauses, which buffers text and only sends it to the
-	synthesizer at sentence or phrase boundaries. Used here the paragraph still sounds like one
-	continuous read."""
+	"""Speak a whole paragraph, handed to the voice in sentence-sized pieces."""
 	from speech.speechWithoutPauses import SpeechWithoutPauses
 
+	speech.cancelSpeech()
 	reader = SpeechWithoutPauses(speakFunc=speech.speak)
 	for line in paragraph.lines:
 		reader.speakWithoutPauses([" ".join(w["text"] for w in line) + " "])
@@ -267,16 +241,14 @@ def speakParagraph(paragraph):
 
 
 class Snapshot:
-	"""One OCRed window: its paragraphs, and a recognition result object to read them with."""
+	"""One recognised window: its paragraphs, and which one was read last."""
 
-	def __init__(self, hwnd, rect, paragraphs, result, doc):
+	def __init__(self, hwnd, rect, paragraphs):
 		self.hwnd = hwnd
 		self.rect = rect  # screen: left, top, width, height
 		self.paragraphs = paragraphs
-		self.result = result
-		self.doc = doc
 		self.created = time.time()
-		self._lastHovered = None
+		self._lastSpoken = None
 
 	def isFresh(self) -> bool:
 		return time.time() - self.created < SNAPSHOT_LIFETIME_SECONDS
@@ -321,58 +293,34 @@ class Snapshot:
 
 		return min(range(len(self.paragraphs)), key=lambda i: distance(self.paragraphs[i]))
 
-	def wordOffsetAt(self, x: int, y: int, paragraphIndex: int) -> int:
-		"""Offset of the word under the point within the paragraph, else the paragraph start."""
-		px, py = self._toPicture(x, y)
-		paragraph = self.paragraphs[paragraphIndex]
-		offset = paragraph.offset
-		for w in paragraph.words:
-			if w["x"] <= px < w["x"] + w["width"] and w["y"] <= py < w["y"] + w["height"]:
-				return offset
-			offset += len(w["text"]) + 1
-		return paragraph.offset
-
-	# ---- hover ---------------------------------------------------------------------------
+	def speakIndex(self, index):
+		self._lastSpoken = index
+		speakParagraph(self.paragraphs[index])
 
 	def hover(self, x: int, y: int) -> bool:
 		"""Read the paragraph under the point when it is a different one from the last paragraph
-		visited. Blank space and the paragraph already being read leave things alone, so panning
-		Magnifier to follow a long message does not cut it off; entering another paragraph stops
-		whatever is being read (speech.cancelSpeech ends Say All too) and reads that one.
-		Returns True when something was read."""
+		read. Blank space and the paragraph just read leave things alone (so panning Magnifier
+		does not repeat it). Returns True when something was read."""
 		index = self.paragraphAt(x, y)
-		if index is None or index == self._lastHovered:
+		if index is None or index == self._lastSpoken:
 			return False
-		self._lastHovered = index
-		speech.cancelSpeech()
-		speakParagraph(self.paragraphs[index])
+		self.speakIndex(index)
 		return True
 
-	def markCurrent(self, index):
-		"""The paragraph reading starts from counts as visited, so moving inside it is quiet."""
-		self._lastHovered = index
 
-
-def buildSnapshot(hwnd, rect, data, imgInfo):
-	"""Turn Windows OCR output into a Snapshot whose result has one line per paragraph."""
-	from contentRecog import recogUi
-
+def buildSnapshot(hwnd, rect, data):
 	paragraphs = groupParagraphs(data)
 	if not paragraphs:
 		return None
-	result = _ParagraphResult.build(paragraphs, imgInfo)
-	# NVDA's own recognition-result object, never focused: it only gives Say All a text to read.
-	doc = recogUi.RecogResultNVDAObject(result=result)
-	return Snapshot(hwnd, rect, paragraphs, result, doc)
+	return Snapshot(hwnd, rect, paragraphs)
 
 
 class OcrReader:
-	"""Runs the OCR for a click and starts reading; keeps the snapshot for hovering."""
+	"""Runs the recognition for a click or the wheel; keeps the snapshot for hovering."""
 
-	def __init__(self, owner):
-		self._owner = owner  # ReadFromHere: provides start unit and the session mode
+	def __init__(self):
 		self.snapshot = None
-		self._pending = None  # recognizer of an OCR still in flight
+		self._pending = None  # recognizer of a recognition still in flight
 		self._wheelTimer = None
 		self._wheelPos = None
 
@@ -390,12 +338,10 @@ class OcrReader:
 				pass
 			self._pending = None
 
-	def start(self, x: int, y: int, startUnit, readAfter: bool = True, quiet: bool = False) -> bool:
-		"""Begin OCR of the window under the point. Returns False if there is nothing to OCR.
-		readAfter: start reading from the paragraph nearest the point once recognised;
-		otherwise just announce the result and leave the snapshot for hovering.
-		quiet: say nothing at all (a refresh after scrolling); afterwards the paragraph under
-		the pointer is read as a fresh hover unless a reading is in progress."""
+	def start(self, x: int, y: int, quiet: bool = False) -> bool:
+		"""Begin recognising the window under the point. Returns False if there is no window.
+		Once recognised, the paragraph under the point is read. quiet: a refresh after
+		scrolling, with no "Recognizing" announcement."""
 		try:
 			from contentRecog import uwpOcr
 		except Exception:
@@ -415,7 +361,7 @@ class OcrReader:
 			return True
 		if self._pending is not None:
 			try:
-				self._pending.cancel()  # a second click before the first OCR came back
+				self._pending.cancel()  # a second request before the first came back
 			except Exception:
 				pass
 		started = time.time()
@@ -428,7 +374,7 @@ class OcrReader:
 		left, top, width, height = rect
 		imgInfo = _WindowImageInfo(left, top, width, height)
 		if not quiet:
-			# Translators: reported while the window under the mouse is being OCRed.
+			# Translators: reported while the window under the mouse is being recognised.
 			ui.message(_("Recognizing"))
 		log.info(
 			"mouseReader: OCR of window %s at %r (%s, captured in %d ms)"
@@ -440,7 +386,7 @@ class OcrReader:
 		def onResult(result):
 			# Recogniser thread: hand over to the main thread.
 			log.info("mouseReader: OCR engine answered after %d ms" % int((time.time() - sent) * 1000))
-			queueHandler.queueFunction(queueHandler.eventQueue, self._onResult, recognizer, hwnd, rect, result, imgInfo, x, y, startUnit, readAfter, quiet)
+			queueHandler.queueFunction(queueHandler.eventQueue, self._onResult, recognizer, hwnd, rect, result, x, y, quiet)
 
 		try:
 			recognizer.recognize(pixels, imgInfo, onResult)
@@ -450,9 +396,9 @@ class OcrReader:
 			ui.message(_("OCR is not available"))
 		return True
 
-	def _onResult(self, recognizer, hwnd, rect, result, imgInfo, x, y, startUnit, readAfter, quiet=False):
+	def _onResult(self, recognizer, hwnd, rect, result, x, y, quiet):
 		if self._pending is not recognizer:
-			return  # superseded by a later click
+			return  # superseded by a later request
 		self._pending = None
 		if isinstance(result, Exception):
 			log.error("mouseReader: recognition failed: %s" % result)
@@ -461,9 +407,9 @@ class OcrReader:
 				ui.message(_("Recognition failed"))
 			return
 		try:
-			snapshot = buildSnapshot(hwnd, rect, result.data, imgInfo)
+			snapshot = buildSnapshot(hwnd, rect, result.data)
 		except Exception:
-			log.exception("mouseReader: could not build the OCR snapshot")
+			log.exception("mouseReader: could not build the snapshot")
 			snapshot = None
 		if snapshot is None:
 			if not quiet:
@@ -471,84 +417,38 @@ class OcrReader:
 				ui.message(_("No text recognized"))
 			return
 		self.snapshot = snapshot
-		log.info("mouseReader: OCR found %d paragraphs (%d lines)" % (len(snapshot.paragraphs), sum(len(p.lines) for p in snapshot.paragraphs)))
+		log.info(
+			"mouseReader: OCR found %d paragraphs (%d lines)"
+			% (len(snapshot.paragraphs), sum(len(p.lines) for p in snapshot.paragraphs))
+		)
+		# Read what is under the pointer now (for a click, the clicked spot; after scrolling,
+		# wherever the pointer is): the nearest paragraph for a click, only an exact hit after a scroll.
 		if quiet:
-			# A refresh after scrolling: what is under the pointer now is new, so read it, unless
-			# a reading is in progress (it carries on from the text it started with).
-			try:
-				if sayAll.SayAllHandler and sayAll.SayAllHandler.isRunning():
-					return
-			except Exception:
-				pass
-			import winUser
-
 			cx, cy = winUser.getCursorPos()
 			if snapshot.covers(cx, cy):
 				snapshot.hover(cx, cy)
 			return
-		if not readAfter:
-			# Translators: reported after a window has been recognised; {count} paragraphs were found.
-			ui.message(_("Recognized {count} paragraphs; hover to read them").format(count=len(snapshot.paragraphs)))
-			return
-		if not self.readFromSnapshot(x, y, startUnit):
-			ui.message(_("No text recognized"))
-
-	def textInfoAt(self, x: int, y: int, startUnit):
-		"""A TextInfo on the snapshot's result at the paragraph (or word) under the point."""
-		snapshot = self.snapshotFor(x, y)
-		if snapshot is None:
-			return None
 		index = snapshot.nearestParagraph(x, y)
 		if index is None:
-			return None
-		if startUnit in (textInfos.UNIT_WORD, None):
-			offset = snapshot.wordOffsetAt(x, y, index)
-		else:
-			offset = snapshot.paragraphs[index].offset
-		try:
-			return snapshot.doc.makeTextInfo(textInfos.offsets.Offsets(offset, offset))
-		except Exception:
-			log.debugWarning("mouseReader: could not place a cursor in the OCR result", exc_info=True)
-			return None
-
-	def readFromSnapshot(self, x: int, y: int, startUnit) -> bool:
-		"""Say All over the snapshot from the paragraph nearest the point."""
-		info = self.textInfoAt(x, y, startUnit)
-		if info is None:
-			return False
-		index = self.snapshot.nearestParagraph(x, y)
-		log.info("mouseReader: reading the OCR result from paragraph %d" % (index + 1))
-		self.snapshot.markCurrent(index)
-		try:
-			if not api.setReviewPosition(info, clearNavigatorObject=True):
-				return False
-			self._owner.sessionStarted(sayAll.CURSOR.REVIEW)
-			sayAll.SayAllHandler.readText(sayAll.CURSOR.REVIEW, startedFromScript=True)
-			return True
-		except Exception:
-			log.exception("mouseReader: could not start reading the OCR result")
-			return False
+			ui.message(_("No text recognized"))
+			return
+		snapshot.speakIndex(index)
 
 	# ---- hover ---------------------------------------------------------------------------
 
-	def snapshotFor(self, x: int, y: int):
-		"""The snapshot, if it is fresh and belongs to the window under the point; else None."""
+	def claim(self, x: int, y: int) -> bool:
+		"""Called for every mouse move NVDA reports. True when a fresh snapshot covers the point;
+		the paragraph there is read if it is not the one read last."""
 		snapshot = self.snapshot
 		if snapshot is None:
-			return None
+			return False
 		if not snapshot.isFresh():
 			self.snapshot = None
-			return None
-		if not snapshot.covers(x, y):
-			return None
-		return snapshot
-
-	def hover(self, x: int, y: int) -> bool:
-		"""Called for every mouse move NVDA reports. True if the snapshot spoke for this spot."""
-		snapshot = self.snapshotFor(x, y)
-		if snapshot is None:
 			return False
-		return snapshot.hover(x, y)
+		if not snapshot.covers(x, y):
+			return False
+		snapshot.hover(x, y)
+		return True
 
 	# ---- the wheel -----------------------------------------------------------------------
 
@@ -563,8 +463,6 @@ class OcrReader:
 			return
 		self._wheelPos = (x, y)
 		if self._wheelTimer is None:
-			import wx
-
 			self._wheelTimer = wx.CallLater(WHEEL_RERECOGNIZE_MS, self._reRecognize)
 		else:
 			self._wheelTimer.Start(WHEEL_RERECOGNIZE_MS)
@@ -578,7 +476,4 @@ class OcrReader:
 		if found is None or found[0] != snapshot.hwnd:
 			return
 		log.info("mouseReader: wheel stopped; recognising the window again")
-		self.start(pos[0], pos[1], None, readAfter=False, quiet=True)
-
-	def forget(self):
-		self.snapshot = None
+		self.start(pos[0], pos[1], quiet=True)
