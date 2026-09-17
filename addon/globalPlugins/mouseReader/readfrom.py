@@ -19,7 +19,8 @@ under the pointer is OCRed with NVDA's built-in Windows OCR and reading starts f
 recognised line nearest the click; that result is NVDA's usual OCR document (Escape leaves it).
 """
 
-from ctypes.wintypes import POINT
+from ctypes import byref
+from ctypes.wintypes import POINT, RECT
 
 import addonHandler
 import api
@@ -36,6 +37,7 @@ import ui
 import winUser
 from logHandler import log
 from speech import sayAll
+from winBindings import user32
 
 try:
 	addonHandler.initTranslation()
@@ -354,15 +356,16 @@ def _windowRectAt(x: int, y: int):
 	"""The top-level window under the point, as (left, top, width, height), clipped to the
 	screen; the OCR image must not start off-screen."""
 	try:
-		hwnd = winUser.user32.WindowFromPoint(POINT(x, y))
+		hwnd = user32.WindowFromPoint(POINT(x, y))
 		if hwnd:
-			hwnd = winUser.getAncestor(hwnd, winUser.GA_ROOT) or hwnd
+			hwnd = user32.GetAncestor(hwnd, winUser.GA_ROOT) or hwnd
 	except Exception:
+		log.debugWarning("mouseReader: WindowFromPoint failed", exc_info=True)
 		hwnd = None
 	if not hwnd:
 		return None
-	r = winUser.RECT()
-	if not winUser.user32.GetWindowRect(hwnd, r):
+	r = RECT()
+	if not user32.GetWindowRect(hwnd, byref(r)):
 		return None
 	import wx
 
@@ -376,12 +379,15 @@ def _windowRectAt(x: int, y: int):
 			screenRight = max(screenRight, g.GetRight() + 1)
 			screenBottom = max(screenBottom, g.GetBottom() + 1)
 	except Exception:
-		screenRight, screenBottom = winUser.user32.GetSystemMetrics(0), winUser.user32.GetSystemMetrics(1)
-	left = max(r.left, max(screenLeft, 0))
-	top = max(r.top, max(screenTop, 0))
+		screenRight, screenBottom = user32.GetSystemMetrics(0), user32.GetSystemMetrics(1)
+	# NVDA's OCR needs the image to start at or right of (0, 0): a window on a monitor to the
+	# left of or above the primary one is clipped to the part that has non-negative coordinates.
+	left = max(r.left, 0)
+	top = max(r.top, 0)
 	right = min(r.right, screenRight)
 	bottom = min(r.bottom, screenBottom)
 	if right - left < 8 or bottom - top < 8:
+		log.info("mouseReader: window under the mouse has no on-screen area to OCR (%r)" % ((r.left, r.top, r.right, r.bottom),))
 		return None
 	return left, top, right - left, bottom - top
 
